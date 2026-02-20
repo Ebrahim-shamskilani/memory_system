@@ -1,14 +1,19 @@
-import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import neo4j, { Driver } from 'neo4j-driver';
+import { MENFRED_MEMORY_CONFIG, MenfredMemoryConfig } from '../sdk/menfred-memory.config';
 
 @Injectable()
 export class GraphDbService implements OnModuleInit, OnModuleDestroy {
   private driver: Driver;
+  private readonly database: string;
 
-  constructor() {
-    const uri = process.env.NEO4J_URI ?? 'bolt://localhost:7687';
-    const user = process.env.NEO4J_USER ?? 'neo4j';
-    const password = process.env.NEO4J_PASSWORD ?? 'cognito2026';
+  constructor(
+    @Inject(MENFRED_MEMORY_CONFIG) @Optional() config?: MenfredMemoryConfig,
+  ) {
+    const uri = config?.neo4j?.uri ?? process.env.NEO4J_URI ?? 'bolt://localhost:7687';
+    const user = config?.neo4j?.user ?? process.env.NEO4J_USER ?? 'neo4j';
+    const password = config?.neo4j?.password ?? process.env.NEO4J_PASSWORD ?? 'cognito2026';
+    this.database = config?.neo4j?.database ?? process.env.NEO4J_DATABASE ?? 'neo4j';
     this.driver = neo4j.driver(uri, neo4j.auth.basic(user, password), {
       disableLosslessIntegers: true,
     });
@@ -23,7 +28,7 @@ export class GraphDbService implements OnModuleInit, OnModuleDestroy {
   }
 
   private getDatabase() {
-    return process.env.NEO4J_DATABASE ?? 'neo4j';
+    return this.database;
   }
 
   private toPlainValue(val: unknown): unknown {

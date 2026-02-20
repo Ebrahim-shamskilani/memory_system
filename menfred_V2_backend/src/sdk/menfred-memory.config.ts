@@ -1,0 +1,24 @@
+export const MENFRED_MEMORY_CONFIG = Symbol('MENFRED_MEMORY_CONFIG');
+
+export interface MenfredMemoryConfig {
+  neo4j: {
+    uri: string;
+    user: string;
+    password: string;
+    database?: string;       // default: 'neo4j'
+  };
+  ollama: {
+    url: string;              // e.g. 'http://localhost:11434'
+    model: string;            // e.g. 'gemma3:12b'
+    embeddingModel?: string;  // default: 'bge-m3'
+  };
+  chromadb: {
+    host: string;
+    port?: number;            // default: 8000
+    dataPath?: string;        // default: './chroma_data'
+    managed?: boolean;        // default: true (standalone), false for SDK
+  };
+  conversation?: {
+    maxBufferSize?: number;   // default: 10
+  };
+}

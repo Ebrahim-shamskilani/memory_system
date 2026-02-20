@@ -1,7 +1,5 @@
-import { Injectable } from '@nestjs/common';
-
-const OLLAMA_URL = process.env.OLLAMA_URL ?? 'http://localhost:11434';
-const DEFAULT_MODEL = 'gemma3:12b';
+import { Inject, Injectable, Optional } from '@nestjs/common';
+import { MENFRED_MEMORY_CONFIG, MenfredMemoryConfig } from '../sdk/menfred-memory.config';
 
 export interface LlmGenerateOptions {
   temperature?: number;
@@ -17,14 +15,28 @@ export interface LlmGenerateParams {
 
 @Injectable()
 export class LlmService {
-  async sendMessage(prompt: string, model = DEFAULT_MODEL): Promise<string> {
-    return this.generate({ model, prompt });
+  private readonly ollamaUrl: string;
+  private readonly defaultModel: string;
+
+  constructor(
+    @Inject(MENFRED_MEMORY_CONFIG) @Optional() config?: MenfredMemoryConfig,
+  ) {
+    this.ollamaUrl = config?.ollama?.url ?? process.env.OLLAMA_URL ?? 'http://localhost:11434';
+    this.defaultModel = config?.ollama?.model ?? 'gemma3:12b';
+  }
+
+  getDefaultModel(): string {
+    return this.defaultModel;
+  }
+
+  async sendMessage(prompt: string, model?: string): Promise<string> {
+    return this.generate({ model: model ?? this.defaultModel, prompt });
   }
 
   async generate(params: LlmGenerateParams): Promise<string> {
     const { model, prompt, options } = params;
 
-    const response = await fetch(`${OLLAMA_URL}/api/generate`, {
+    const response = await fetch(`${this.ollamaUrl}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -41,5 +53,32 @@ export class LlmService {
 
     const data = (await response.json()) as { response?: string };
     return data.response ?? '';
+  }
+
+  async generateJson<T = unknown>(
+    params: LlmGenerateParams,
+    maxRetries = 2,
+  ): Promise<T> {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const raw = await this.generate(params);
+
+      try {
+        const jsonMatch = raw.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          return JSON.parse(jsonMatch[0]) as T;
+        }
+
+        const arrayMatch = raw.match(/\[[\s\S]*\]/);
+        if (arrayMatch) {
+          return JSON.parse(arrayMatch[0]) as T;
+        }
+      } catch {
+        if (attempt === maxRetries) {
+          throw new Error(`Failed to parse JSON after ${maxRetries + 1} attempts. Raw: ${raw.substring(0, 200)}`);
+        }
+      }
+    }
+
+    throw new Error('generateJson: unreachable');
   }
 }

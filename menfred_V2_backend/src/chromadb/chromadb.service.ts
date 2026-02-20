@@ -1,30 +1,49 @@
-import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { ChromaClient } from 'chromadb';
+import { OllamaEmbeddingFunction } from '@chroma-core/ollama';
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as path from 'node:path';
+import { MENFRED_MEMORY_CONFIG, MenfredMemoryConfig } from '../sdk/menfred-memory.config';
 
 const CHROMA_PORT = 8000;
 const CHROMA_HOST = 'localhost';
 
+export const COLLECTION_ENTITIES = 'entities';
+export const COLLECTION_RELATIONSHIPS = 'relationships';
+export const COLLECTION_EPISODES = 'episodes';
+
 @Injectable()
 export class ChromadbService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(ChromadbService.name);
   private client: ChromaClient;
   private serverProcess: ChildProcess | null = null;
   private dataPath: string;
+  private embeddingFunction: OllamaEmbeddingFunction;
+  private readonly managed: boolean;
+  private readonly chromaPort: number;
 
-  constructor() {
+  constructor(
+    @Inject(MENFRED_MEMORY_CONFIG) @Optional() config?: MenfredMemoryConfig,
+  ) {
+    const host = config?.chromadb?.host ?? process.env.CHROMA_HOST ?? CHROMA_HOST;
+    this.chromaPort = config?.chromadb?.port ?? parseInt(process.env.CHROMA_PORT ?? String(CHROMA_PORT), 10);
+    this.managed = config?.chromadb?.managed ?? (process.env.CHROMA_MANAGED !== 'false');
     this.dataPath =
+      config?.chromadb?.dataPath ??
       process.env.CHROMA_DATA_PATH ??
       path.join(process.cwd(), 'chroma_data');
     this.client = new ChromaClient({
-      host: process.env.CHROMA_HOST ?? CHROMA_HOST,
-      port: parseInt(process.env.CHROMA_PORT ?? String(CHROMA_PORT), 10),
+      host,
+      port: this.chromaPort,
+    });
+    this.embeddingFunction = new OllamaEmbeddingFunction({
+      url: config?.ollama?.url ?? process.env.OLLAMA_URL ?? 'http://localhost:11434',
+      model: config?.ollama?.embeddingModel ?? 'bge-m3',
     });
   }
 
   async onModuleInit() {
-    const manageServer = process.env.CHROMA_MANAGED !== 'false';
-    if (manageServer) {
+    if (this.managed) {
       await this.startServer();
     } else {
       await this.waitForServer();
@@ -41,7 +60,7 @@ export class ChromadbService implements OnModuleInit, OnModuleDestroy {
 
     this.serverProcess = spawn(
       process.execPath,
-      [chromaCliPath, 'run', '--path', this.dataPath, '--port', String(CHROMA_PORT)],
+      [chromaCliPath, 'run', '--path', this.dataPath, '--port', String(this.chromaPort)],
       {
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: false,
@@ -90,5 +109,58 @@ export class ChromadbService implements OnModuleInit, OnModuleDestroy {
 
   getClient(): ChromaClient {
     return this.client;
+  }
+
+  getEmbeddingFunction(): OllamaEmbeddingFunction {
+    return this.embeddingFunction;
+  }
+
+  async getCollection(name: string) {
+    return this.client.getOrCreateCollection({
+      name,
+      embeddingFunction: this.embeddingFunction,
+    });
+  }
+
+  async upsertDocument(
+    collectionName: string,
+    id: string,
+    document: string,
+    metadata: Record<string, string | number | boolean>,
+  ): Promise<void> {
+    const col = await this.getCollection(collectionName);
+    await col.upsert({
+      ids: [id],
+      documents: [document],
+      metadatas: [metadata],
+    });
+  }
+
+  async queryCollection(
+    collectionName: string,
+    queryText: string,
+    nResults = 10,
+    where?: any,
+  ) {
+    const col = await this.getCollection(collectionName);
+    return col.query({
+      queryTexts: [queryText],
+      nResults,
+      ...(where ? { where } : {}),
+      include: ['documents', 'metadatas', 'distances'],
+    });
+  }
+
+  async getByIds(collectionName: string, ids: string[]) {
+    const col = await this.getCollection(collectionName);
+    return col.get({
+      ids,
+      include: ['documents', 'metadatas'],
+    });
+  }
+
+  async deleteDocument(collectionName: string, id: string): Promise<void> {
+    const col = await this.getCollection(collectionName);
+    await col.delete({ ids: [id] });
   }
 }

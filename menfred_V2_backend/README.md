@@ -1,99 +1,212 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# @menfred/memory
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Brain-inspired memory system for NestJS -- dual-write to Neo4j + ChromaDB with LLM-powered retrieval, ingestion, consolidation, and synthesis.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://coveralls.io/github/nestjs/nest?branch=master" target="_blank"><img src="https://coveralls.io/repos/github/nestjs/nest/badge.svg?branch=master#9" alt="Coverage" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Prerequisites
 
-## Description
+The following services must be running and reachable:
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+- **Neo4j** (bolt protocol) -- graph store for entities, relationships, episodes, facts
+- **ChromaDB** -- vector store for semantic search
+- **Ollama** -- local LLM inference (generation + embeddings)
 
-## Project setup
+## Installation
+
+From a sibling project (e.g. the brain system):
 
 ```bash
-$ npm install
+npm install ../menfred_V2_backend
 ```
 
-## Compile and run the project
+Or in `package.json`:
+
+```json
+{
+  "dependencies": {
+    "@menfred/memory": "file:../menfred_V2_backend"
+  }
+}
+```
+
+Make sure to build first:
 
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+cd menfred_V2_backend && npm run build
 ```
 
-## Run tests
+## Usage
 
-```bash
-# unit tests
-$ npm run test
+Import `MenfredMemoryModule.forRoot(config)` in your root module:
 
-# e2e tests
-$ npm run test:e2e
+```typescript
+import { Module } from '@nestjs/common';
+import { MenfredMemoryModule } from '@menfred/memory';
 
-# test coverage
-$ npm run test:cov
+@Module({
+  imports: [
+    MenfredMemoryModule.forRoot({
+      neo4j: {
+        uri: 'bolt://localhost:7687',
+        user: 'neo4j',
+        password: 'your-password',
+        database: 'neo4j',          // optional, default: 'neo4j'
+      },
+      ollama: {
+        url: 'http://localhost:11434',
+        model: 'gemma3:12b',
+        embeddingModel: 'bge-m3',   // optional, default: 'bge-m3'
+      },
+      chromadb: {
+        host: 'localhost',
+        port: 8000,                  // optional, default: 8000
+        managed: false,              // set false when using as SDK
+        dataPath: './chroma_data',   // optional
+      },
+      conversation: {
+        maxBufferSize: 10,           // optional, default: 10
+      },
+    }),
+  ],
+})
+export class AppModule {}
 ```
 
-## Deployment
+Then inject `UnifiedMemoryService` anywhere:
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+```typescript
+import { Injectable } from '@nestjs/common';
+import { UnifiedMemoryService } from '@menfred/memory';
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+@Injectable()
+export class BrainService {
+  constructor(private readonly memory: UnifiedMemoryService) {}
 
-```bash
-$ npm install -g mau
-$ mau deploy
+  async handleMessage(message: string) {
+    // Ingest + recall in one call
+    const result = await this.memory.processMessage(message);
+    console.log(result.answer);
+    console.log(result.ingestion);
+  }
+}
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+## Configuration Reference
 
-## Resources
+| Section | Key | Type | Default | Description |
+|---------|-----|------|---------|-------------|
+| `neo4j` | `uri` | `string` | -- | Neo4j bolt URI |
+| `neo4j` | `user` | `string` | -- | Neo4j username |
+| `neo4j` | `password` | `string` | -- | Neo4j password |
+| `neo4j` | `database` | `string?` | `'neo4j'` | Neo4j database name |
+| `ollama` | `url` | `string` | -- | Ollama base URL |
+| `ollama` | `model` | `string` | -- | Default LLM model for generation |
+| `ollama` | `embeddingModel` | `string?` | `'bge-m3'` | Embedding model name |
+| `chromadb` | `host` | `string` | -- | ChromaDB server host |
+| `chromadb` | `port` | `number?` | `8000` | ChromaDB server port |
+| `chromadb` | `dataPath` | `string?` | `'./chroma_data'` | ChromaDB data directory |
+| `chromadb` | `managed` | `boolean?` | `true` (standalone) | Whether to auto-start ChromaDB. Set `false` for SDK usage. |
+| `conversation` | `maxBufferSize` | `number?` | `10` | Max conversation turns to keep in buffer |
 
-Check out a few resources that may come in handy when working with NestJS:
+## API Reference
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+### `UnifiedMemoryService`
 
-## Support
+#### `processMessage(message: string)`
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+Ingest a user message (extract entities, facts, relationships, episodes) and then recall relevant memories. Returns the synthesized answer plus ingestion stats.
 
-## Stay in touch
+**Returns:** `Promise<MemoryRecallResult & { ingestion: IngestionResult }>`
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+#### `recall(message: string)`
 
-## License
+Recall-only -- retrieve and synthesize relevant memories without ingesting new information.
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+**Returns:** `Promise<MemoryRecallResult>`
+
+#### `ingest(message: string)`
+
+Ingest-only -- extract and store information without generating a recall response.
+
+**Returns:** `Promise<IngestionResult>`
+
+#### `triggerConsolidation()`
+
+Manually trigger the consolidation pipeline (summarization, pattern detection, contradiction resolution, fact promotion, deduplication).
+
+**Returns:** `Promise<ConsolidationRun>`
+
+#### `endConversation()`
+
+Start a new conversation and trigger consolidation of the previous one.
+
+**Returns:** `Promise<{ newConversationId: string; consolidation: ConsolidationRun }>`
+
+#### Store Delegation Methods
+
+- `createEntity(dto: CreateEntityDto): Promise<DualWriteResult>`
+- `createRelationship(dto: CreateRelationshipDto): Promise<DualWriteResult>`
+- `createEpisode(dto: CreateEpisodeDto): Promise<DualWriteResult>`
+- `createFact(dto: CreateFactDto): Promise<DualWriteResult>`
+- `linkEntityToFact(entityChromaId, factChromaId, description): Promise<void>`
+- `linkEntityToEpisode(entityChromaId, episodeChromaId, role, description): Promise<void>`
+- `getStore(): UnifiedStoreService`
+
+## Return Types
+
+### `MemoryRecallResult`
+
+```typescript
+{
+  answer: string;
+  sources: {
+    entities: string[];
+    relationships: string[];
+    episodes: string[];
+    facts: string[];
+  };
+  iterations: number;
+}
+```
+
+### `IngestionResult`
+
+```typescript
+{
+  entitiesCreated: number;
+  entitiesResolved: number;
+  factsCreated: number;
+  factsSkippedDuplicate: number;
+  relationshipsCreated: number;
+  episodeCreated: boolean;
+  eventsCreated: number;
+}
+```
+
+### `DualWriteResult`
+
+```typescript
+{
+  neo4jSuccess: boolean;
+  chromaSuccess: boolean;
+  chromaId: string;
+  rolledBack?: boolean;
+}
+```
+
+### `ConsolidationRun`
+
+```typescript
+{
+  runId: string;
+  startedAt: string;
+  completedAt?: string;
+  trigger: 'message_count' | 'conversation_end' | 'manual';
+  stats: ConsolidationStats;
+}
+```
+
+## Notes
+
+- When using as an SDK (`MenfredMemoryModule.forRoot()`), set `chromadb.managed: false` -- the consumer is responsible for running ChromaDB externally.
+- The standalone app (`npm run start:dev`) continues to work unchanged using environment variables.
+- The module is registered as `global: true`, so `UnifiedMemoryService` is available in any module without additional imports.
