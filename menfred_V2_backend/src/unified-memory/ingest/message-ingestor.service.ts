@@ -80,23 +80,29 @@ Given a user message (may be informal, have typos, no punctuation, mixed languag
 
 **CRITICAL IDENTITY RULES:**
 - The user's name is ${this.userName} (${this.userNameEnglish}).
+- The assistant's name is ${this.brainName}.
 - ALL first-person references ("من", "I", "me", "my", "مال من", "م") MUST be resolved to "${this.userName}".
-- "you/تو/شما" directed at the assistant refers to "${this.brainName}".
-- NEVER use "من" or "I" in entity names, fact content, or about_entities. ALWAYS replace with "${this.userName}".
+- "you/تو/شما/ت" directed at the assistant refers to "${this.brainName}". Example: "تولدته" = "تولد ${this.brainName}", "اسمت" = "اسم ${this.brainName}".
+- NEVER use pronouns ("من", "I", "تو", "you") in entity names, fact content, or about_entities. ALWAYS replace with the actual name.
 - "${this.userName}" MUST appear in about_entities for ANY fact about the user.
+- "${this.brainName}" MUST appear in about_entities for ANY fact about the assistant.
 
-**Examples of correct pronoun resolution:**
+**CRITICAL DATE RULES:**
+- Today's date is: {{TODAY_DATE}}
+- NEVER use relative time words ("امروز", "today", "دیروز", "yesterday", "فردا", "tomorrow") in fact content.
+- ALWAYS resolve them to actual dates. "امروز" → "{{TODAY_DATE}}", "دیروز" → the day before {{TODAY_DATE}}.
+- Example: User says "امروز روز تولدته" on {{TODAY_DATE}} → fact: "تاریخ تولد ${this.brainName} {{TODAY_DATE}} است" (NOT "امروز روز تولد ${this.brainName} است")
+
+**Examples of correct extraction:**
 - User says: "من تو برلین زندگی می کنم" → fact: "${this.userName} در برلین زندگی می کند", about_entities: ["${this.userName}", "برلین"]
 - User says: "دخترم دلاراست" → fact: "دلارا دختر ${this.userName} است", about_entities: ["${this.userName}", "دلارا"], relationship: {source: "${this.userName}", target: "دلارا", type: "father_daughter"}
 - User says: "اسم تو ${this.brainName} ه" → fact: "اسم دستیار هوشمند ${this.brainName} است", about_entities: ["${this.brainName}"]
+- User says: "امروز روز تولدته" → fact: "تاریخ تولد ${this.brainName} {{TODAY_DATE}} است", about_entities: ["${this.brainName}"]
 - User says: "یه خواهر دارم اسمش آرزو" → fact: "آرزو خواهر ${this.userName} است", about_entities: ["${this.userName}", "آرزو"], relationship: {source: "${this.userName}", target: "آرزو", type: "sibling"}
 
 **Distinguishing facts vs events:**
-- A **fact** is a general/stable truth (no time anchor): "من تو برلین زندگی می کنم", "دلارا خواهرم هست"
+- A **fact** is a general/stable truth: "من تو برلین زندگی می کنم", "دلارا خواهرم هست"
 - An **event** happened at a specific time: "دیروز رفتم کوه", "هفته پیش دندون پزشک رفتم"
-
-Today's date is: {{TODAY_DATE}}
-Use this to resolve relative time references (e.g., "yesterday" → actual date).
 
 Rules:
 - Handle informal Persian (e.g., "تو" instead of "در", "می کنن" instead of "می کنند")
@@ -163,8 +169,8 @@ Respond ONLY with valid JSON:
     const extraction = await this.extract(message);
     if (!extraction) return result;
 
-    // Step 2b: Post-process — normalize first-person references the LLM may have missed
-    this.normalizeFirstPerson(extraction);
+    // Step 2b: Post-process — normalize pronoun references the LLM may have missed
+    this.normalizePronouns(extraction);
 
     this.logger.log(
       `Extracted: ${extraction.entities.length} entities, ${extraction.facts.length} facts, ${extraction.events.length} events, ${extraction.relationships.length} relationships`,
@@ -457,64 +463,52 @@ JSON response:`;
   }
 
   /**
-   * Post-process extraction to fix first-person pronoun references the LLM may have missed.
-   * Replaces "من", "I", "me" with the user's name in entities, facts, relationships, and events.
+   * Post-process extraction to fix pronoun references the LLM may have missed.
+   * Language-agnostic: only matches exact entity names like "I", "me", "you" (English)
+   * that LLMs commonly output regardless of input language.
+   * All other language-specific pronoun resolution is handled by the LLM prompt.
    */
-  private normalizeFirstPerson(extraction: ExtractionResult): void {
-    const firstPersonPatterns = ['من', 'i', 'me', 'my', 'myself'];
-    const brainPatterns = ['تو', 'you', 'your'];
+  private normalizePronouns(extraction: ExtractionResult): void {
+    // Only English pronouns — LLMs often fall back to English even for non-English input
+    const userPronouns = ['i', 'me', 'my', 'myself'];
+    const brainPronouns = ['you', 'your', 'yourself'];
 
-    const isFirstPerson = (name: string) =>
-      firstPersonPatterns.includes(name.toLowerCase().trim());
-    const isBrainRef = (name: string) =>
-      brainPatterns.includes(name.toLowerCase().trim());
+    const isUserPronoun = (name: string) =>
+      userPronouns.includes(name.toLowerCase().trim());
+    const isBrainPronoun = (name: string) =>
+      brainPronouns.includes(name.toLowerCase().trim());
 
     // Normalize entity names
     for (const entity of extraction.entities) {
-      if (isFirstPerson(entity.name)) {
+      if (isUserPronoun(entity.name)) {
         entity.name = this.userName;
-      } else if (isBrainRef(entity.name)) {
+      } else if (isBrainPronoun(entity.name)) {
         entity.name = this.brainName;
       }
     }
 
-    // Normalize fact content and about_entities
+    // Normalize fact about_entities
     for (const fact of extraction.facts) {
-      // Replace first-person in about_entities
       fact.about_entities = fact.about_entities.map((name) => {
-        if (isFirstPerson(name)) return this.userName;
-        if (isBrainRef(name)) return this.brainName;
+        if (isUserPronoun(name)) return this.userName;
+        if (isBrainPronoun(name)) return this.brainName;
         return name;
       });
-
-      // If fact content contains first-person patterns but user is not in about_entities, add them
-      const contentLower = fact.content.toLowerCase();
-      const mentionsFirstPerson = firstPersonPatterns.some((p) =>
-        contentLower.includes(p),
-      );
-      const hasUser = fact.about_entities.some(
-        (name) =>
-          name.toLowerCase() === this.userName.toLowerCase() ||
-          name.toLowerCase() === this.userNameEnglish.toLowerCase(),
-      );
-      if (mentionsFirstPerson && !hasUser) {
-        fact.about_entities.push(this.userName);
-      }
     }
 
     // Normalize relationship source/target
     for (const rel of extraction.relationships) {
-      if (isFirstPerson(rel.source)) rel.source = this.userName;
-      if (isFirstPerson(rel.target)) rel.target = this.userName;
-      if (isBrainRef(rel.source)) rel.source = this.brainName;
-      if (isBrainRef(rel.target)) rel.target = this.brainName;
+      if (isUserPronoun(rel.source)) rel.source = this.userName;
+      if (isUserPronoun(rel.target)) rel.target = this.userName;
+      if (isBrainPronoun(rel.source)) rel.source = this.brainName;
+      if (isBrainPronoun(rel.target)) rel.target = this.brainName;
     }
 
     // Normalize event participants
     for (const event of extraction.events) {
       event.participants = event.participants.map((name) => {
-        if (isFirstPerson(name)) return this.userName;
-        if (isBrainRef(name)) return this.brainName;
+        if (isUserPronoun(name)) return this.userName;
+        if (isBrainPronoun(name)) return this.brainName;
         return name;
       });
     }
