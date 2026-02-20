@@ -2,6 +2,7 @@ import { Injectable, Logger, Inject, Optional } from '@nestjs/common';
 import { LlmService } from '../../llm/llm.service';
 import { UnifiedStoreService } from '../store/unified-store.service';
 import { EntityStoreService } from '../store/entity-store.service';
+import { RelationshipStoreService } from '../store/relationship-store.service';
 import { VectorLookupService } from '../retrieve/vector-lookup.service';
 import { ConversationService } from '../../conversation/conversation.service';
 import { EntityType } from '../types/entity.types';
@@ -44,6 +45,7 @@ export interface IngestionResult {
   factsCreated: number;
   factsSkippedDuplicate: number;
   relationshipsCreated: number;
+  relationshipsSkippedDuplicate: number;
   episodeCreated: boolean;
   eventsCreated: number;
 }
@@ -60,6 +62,7 @@ export class MessageIngestorService {
     private readonly llm: LlmService,
     private readonly store: UnifiedStoreService,
     private readonly entityStore: EntityStoreService,
+    private readonly relationshipStore: RelationshipStoreService,
     private readonly vectorLookup: VectorLookupService,
     private readonly conversation: ConversationService,
     @Inject(MENFRED_MEMORY_CONFIG) @Optional() config?: MenfredMemoryConfig,
@@ -104,6 +107,11 @@ Given a user message (may be informal, have typos, no punctuation, mixed languag
 - A **fact** is a general/stable truth: "من تو برلین زندگی می کنم", "دلارا خواهرم هست"
 - An **event** happened at a specific time: "دیروز رفتم کوه", "هفته پیش دندون پزشک رفتم"
 
+**CRITICAL: QUESTIONS vs STATEMENTS**
+- If the message is a QUESTION asking about existing information (e.g., "آرزو کیه?", "what is X?", "آرزو چه نسبتی با ابراهیم داره?"), return EMPTY arrays for entities, facts, events, and relationships.
+- ONLY extract from STATEMENTS that provide NEW information.
+- A question does NOT provide new information — do NOT hallucinate or infer answers.
+
 Rules:
 - Handle informal Persian (e.g., "تو" instead of "در", "می کنن" instead of "می کنند")
 - Handle missing punctuation — split sentences by meaning
@@ -137,6 +145,7 @@ Respond ONLY with valid JSON:
       factsCreated: 0,
       factsSkippedDuplicate: 0,
       relationshipsCreated: 0,
+      relationshipsSkippedDuplicate: 0,
       episodeCreated: false,
       eventsCreated: 0,
     };
@@ -245,12 +254,25 @@ Respond ONLY with valid JSON:
       }
     }
 
-    // Step 5: Create relationships (append-only)
+    // Step 5: Create relationships (with dedup check)
     for (const rel of extraction.relationships) {
       const sourceId = this.findEntityId(rel.source, entityMap);
       const targetId = this.findEntityId(rel.target, entityMap);
 
       if (sourceId && targetId) {
+        // Dedup check: skip if same relationType already exists between these entities
+        const existing = await this.relationshipStore.findBetweenEntities(sourceId, targetId);
+        const isDuplicate = existing.some(
+          (e) => e.relationType?.toLowerCase() === rel.type.toLowerCase(),
+        );
+        if (isDuplicate) {
+          this.logger.log(
+            `Skipping duplicate relationship: "${rel.type}" between ${rel.source} and ${rel.target}`,
+          );
+          result.relationshipsSkippedDuplicate++;
+          continue;
+        }
+
         const relResult = await this.store.createRelationship({
           sourceChromaId: sourceId,
           targetChromaId: targetId,
@@ -325,7 +347,7 @@ Respond ONLY with valid JSON:
     }
 
     this.logger.log(
-      `Ingestion complete: ${result.entitiesCreated} new entities, ${result.entitiesResolved} resolved, ${result.factsCreated} facts (${result.factsSkippedDuplicate} dupes skipped), ${result.eventsCreated} events, ${result.relationshipsCreated} relationships`,
+      `Ingestion complete: ${result.entitiesCreated} new entities, ${result.entitiesResolved} resolved, ${result.factsCreated} facts (${result.factsSkippedDuplicate} dupes skipped), ${result.eventsCreated} events, ${result.relationshipsCreated} relationships (${result.relationshipsSkippedDuplicate} dupes skipped)`,
     );
 
     return result;

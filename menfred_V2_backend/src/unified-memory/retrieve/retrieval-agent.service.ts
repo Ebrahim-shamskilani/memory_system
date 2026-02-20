@@ -5,6 +5,7 @@ import { VectorLookupService } from './vector-lookup.service';
 import { GraphTraversalService } from './graph-traversal.service';
 import { SufficiencyEvaluatorService } from './sufficiency-evaluator.service';
 import {
+  EntityResolutionResult,
   RetrievalContext,
   VectorSearchResult,
   TraversalResult,
@@ -32,12 +33,12 @@ export class RetrievalAgentService {
    * 4. Semantic graph traversal
    * 5. Iterative deepening with sufficiency checks
    */
-  async retrieve(message: string): Promise<RetrievalContext> {
+  async retrieve(message: string, precomputedResolution?: EntityResolutionResult): Promise<RetrievalContext> {
     // Step 1: Get conversation context
     const conversationContext = this.conversationService.getContextString();
 
-    // Step 2: Entity resolution + intent classification
-    const resolution = await this.entityResolver.resolve(message, conversationContext);
+    // Step 2: Entity resolution + intent classification (skip if pre-computed)
+    const resolution = precomputedResolution ?? await this.entityResolver.resolve(message, conversationContext);
     this.logger.log(
       `Resolved entities: ${resolution.entities.map((e) => e.name).join(', ')} | Intents: ${resolution.intents.join(', ')}`,
     );

@@ -73,6 +73,21 @@ export class RelationshipStoreService {
     }
   }
 
+  async findBetweenEntities(
+    entityId1: string,
+    entityId2: string,
+  ): Promise<{ chromaId: string; relationType: string }[]> {
+    const result = await this.graphDb.runQuery(
+      `MATCH (a:Entity {chromaId: $id1})-[r:RELATES_TO]-(b:Entity {chromaId: $id2})
+       RETURN r.chromaId AS chromaId, r.relationType AS relationType`,
+      { id1: entityId1, id2: entityId2 },
+    );
+    return result.records.map((rec: any) => ({
+      chromaId: rec.chromaId,
+      relationType: rec.relationType,
+    }));
+  }
+
   async getRelationshipsForEntity(
     entityChromaId: string,
   ): Promise<{ relationship: RelationshipData; sourceChromaId: string; targetChromaId: string }[]> {

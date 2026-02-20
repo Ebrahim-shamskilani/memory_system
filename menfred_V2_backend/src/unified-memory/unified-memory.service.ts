@@ -5,6 +5,7 @@ import { SynthesisService } from './synthesize/synthesis.service';
 import { MessageIngestorService, IngestionResult } from './ingest/message-ingestor.service';
 import { ConsolidationService } from './consolidate/consolidation.service';
 import { ConversationService } from '../conversation/conversation.service';
+import { EntityResolverService } from './retrieve/entity-resolver.service';
 import { GraphDbService } from '../graph-db/graph-db.service';
 import {
   ChromadbService,
@@ -29,13 +30,14 @@ export class UnifiedMemoryService {
     private readonly ingestor: MessageIngestorService,
     private readonly consolidation: ConsolidationService,
     private readonly conversation: ConversationService,
+    private readonly entityResolver: EntityResolverService,
     private readonly graphDb: GraphDbService,
     private readonly chromaDb: ChromadbService,
   ) {}
 
   /**
    * Main entry point: process a user message.
-   * Always ingests first (append-only), then recalls.
+   * Pre-classifies intent: only ingests if 'store_information' is detected.
    */
   async processMessage(message: string): Promise<MemoryRecallResult & { ingestion: IngestionResult }> {
     this.logger.log(`Processing message: "${message.substring(0, 80)}..."`);
@@ -43,14 +45,38 @@ export class UnifiedMemoryService {
     // Add user turn to conversation buffer
     this.conversation.addTurn('user', message);
 
-    // Step 1: INGEST — extract and store entities, facts, relationships, episode
-    const ingestion = await this.ingestor.ingest(message);
+    // Step 0: Pre-classify intent to decide whether to ingest
+    const conversationContext = this.conversation.getContextString();
+    const resolution = await this.entityResolver.resolve(message, conversationContext);
+    const shouldIngest = resolution.intents.includes('store_information');
+
     this.logger.log(
-      `Ingested: ${ingestion.entitiesCreated} new entities, ${ingestion.factsCreated} facts, ${ingestion.relationshipsCreated} relationships`,
+      `Intent classification: [${resolution.intents.join(', ')}] → ${shouldIngest ? 'INGEST + RECALL' : 'RECALL only'}`,
     );
 
-    // Step 2: RECALL — retrieve relevant memories and synthesize answer
-    const context = await this.retrievalAgent.retrieve(message);
+    // Step 1: INGEST — only if message provides new information
+    let ingestion: IngestionResult;
+    if (shouldIngest) {
+      ingestion = await this.ingestor.ingest(message);
+      this.logger.log(
+        `Ingested: ${ingestion.entitiesCreated} new entities, ${ingestion.factsCreated} facts, ${ingestion.relationshipsCreated} relationships`,
+      );
+    } else {
+      ingestion = {
+        entitiesCreated: 0,
+        entitiesResolved: 0,
+        factsCreated: 0,
+        factsSkippedDuplicate: 0,
+        relationshipsCreated: 0,
+        relationshipsSkippedDuplicate: 0,
+        episodeCreated: false,
+        eventsCreated: 0,
+      };
+      this.logger.log('Skipping ingestion — message is a question/query, not new information');
+    }
+
+    // Step 2: RECALL — retrieve relevant memories and synthesize answer (reuse pre-computed resolution)
+    const context = await this.retrievalAgent.retrieve(message, resolution);
     const result = await this.synthesis.synthesize(message, context);
 
     this.logger.log(

@@ -3,7 +3,8 @@ export type IntentType =
   | 'find_relationship'
   | 'find_event'
   | 'find_pattern'
-  | 'recall_conversation';
+  | 'recall_conversation'
+  | 'store_information';
 
 export interface ResolvedEntity {
   name: string;
