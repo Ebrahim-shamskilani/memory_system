@@ -1,0 +1,67 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+tmp/
+out-tsc/
+bazel-out/
+
+# Angular
+.angular/
+*.ngfactory.ts
+*.ngsummary.json
+
+# NestJS
+menfred_V2_backend/dist/
+
+# Environment & secrets (never commit!)
+.env
+.env.local
+.env.*.local
+*.env
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# IDE & editors
+.idea/
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+.history/
+
+# VS Code (keep shared config if needed)
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# Testing
+coverage/
+.nyc_output/
+*.lcov
+
+# Misc
+.sass-cache/
+connect.lock
+libpeerconnection.log
+testem.log
+typings/
+
+# Data / runtime (e.g. ChromaDB persistence)
+menfred_V2_backend/chroma_data/
+
+# System files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~

@@ -1,0 +1,34 @@
+<div class="prompt-container">
+  <h2>Send Direct Prompt to LLM</h2>
+
+  <form (ngSubmit)="sendPrompt()">
+    <div class="form-group">
+      <label for="prompt">Your prompt</label>
+      <textarea
+        id="prompt"
+        [(ngModel)]="prompt"
+        name="prompt"
+        placeholder="Type your prompt..."
+        rows="3"
+      ></textarea>
+    </div>
+
+    <button type="submit" [disabled]="loading || !prompt.trim()">
+      {{ loading ? 'Sending...' : 'Send to LLM' }}
+    </button>
+  </form>
+
+  @if (response) {
+    <div class="result success">
+      <h3>LLM Response</h3>
+      <pre>{{ response }}</pre>
+    </div>
+  }
+
+  @if (error) {
+    <div class="result error">
+      <h3>Error</h3>
+      <p>{{ error }}</p>
+    </div>
+  }
+</div>

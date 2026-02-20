@@ -1,0 +1,147 @@
+<div class="graphdb-container">
+  <h2>Neo4j Graph DB</h2>
+
+  <!-- Add Section -->
+  <section class="section">
+    <h3>Add (Create)</h3>
+    <p class="hint">Run a Cypher write query to create nodes or relationships. Use $paramName for parameters.</p>
+    <form (ngSubmit)="runAdd()">
+      <div class="form-group">
+        <label for="addCypher">Cypher</label>
+        <textarea
+          id="addCypher"
+          [(ngModel)]="addCypher"
+          name="addCypher"
+          placeholder="CREATE (p:Person {name: $name}) RETURN p"
+          rows="3"
+        ></textarea>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="addParamKey">Param key</label>
+          <input id="addParamKey" type="text" [(ngModel)]="addParamKey" name="addParamKey" placeholder="name" />
+        </div>
+        <div class="form-group">
+          <label for="addParamValue">Param value</label>
+          <input id="addParamValue" type="text" [(ngModel)]="addParamValue" name="addParamValue" placeholder="Alice" />
+        </div>
+      </div>
+      <button type="button" (click)="addParamPair()">Add param</button>
+      @if (addParams.length) {
+        <div class="params-list">
+          @for (p of addParams; track p.key) {
+            <span class="param-tag">{{ p.key }}=<em>{{ p.value }}</em> <button type="button" (click)="removeAddParam(p.key)">×</button></span>
+          }
+        </div>
+      }
+      <button type="submit" [disabled]="addLoading" class="primary">
+        {{ addLoading ? 'Running...' : 'Run Add' }}
+      </button>
+    </form>
+    @if (addResult) {
+      <div class="result success">
+        <h4>Result</h4>
+        <pre>{{ addResult | json }}</pre>
+      </div>
+    }
+    @if (addError) {
+      <div class="result error">{{ addError }}</div>
+    }
+  </section>
+
+  <!-- Query Section -->
+  <section class="section">
+    <h3>Query (Read)</h3>
+    <p class="hint">Run a Cypher read query. Use MATCH and RETURN to fetch data.</p>
+    <form (ngSubmit)="runQuery()">
+      <div class="form-group">
+        <label for="queryCypher">Cypher</label>
+        <textarea
+          id="queryCypher"
+          [(ngModel)]="queryCypher"
+          name="queryCypher"
+          placeholder="MATCH (p:Person) RETURN p.name AS name"
+          rows="3"
+        ></textarea>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="queryParamKey">Param key</label>
+          <input id="queryParamKey" type="text" [(ngModel)]="queryParamKey" name="queryParamKey" />
+        </div>
+        <div class="form-group">
+          <label for="queryParamValue">Param value</label>
+          <input id="queryParamValue" type="text" [(ngModel)]="queryParamValue" name="queryParamValue" />
+        </div>
+      </div>
+      <button type="button" (click)="addQueryParamPair()">Add param</button>
+      @if (queryParams.length) {
+        <div class="params-list">
+          @for (p of queryParams; track p.key) {
+            <span class="param-tag">{{ p.key }}=<em>{{ p.value }}</em> <button type="button" (click)="removeQueryParam(p.key)">×</button></span>
+          }
+        </div>
+      }
+      <button type="submit" [disabled]="queryLoading" class="primary">
+        {{ queryLoading ? 'Running...' : 'Run Query' }}
+      </button>
+    </form>
+    @if (queryResult) {
+      <div class="result success">
+        <h4>Result</h4>
+        <pre>{{ queryResult | json }}</pre>
+      </div>
+    }
+    @if (queryError) {
+      <div class="result error">{{ queryError }}</div>
+    }
+  </section>
+
+  <!-- Update Section -->
+  <section class="section">
+    <h3>Update</h3>
+    <p class="hint">Run a Cypher write query to update nodes. Use MATCH and SET.</p>
+    <form (ngSubmit)="runUpdate()">
+      <div class="form-group">
+        <label for="updateCypher">Cypher</label>
+        <textarea
+          id="updateCypher"
+          [(ngModel)]="updateCypher"
+          name="updateCypher"
+          placeholder="MATCH (p:Person {name: $name}) SET p.age = $age RETURN p"
+          rows="3"
+        ></textarea>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="updateParamKey">Param key</label>
+          <input id="updateParamKey" type="text" [(ngModel)]="updateParamKey" name="updateParamKey" />
+        </div>
+        <div class="form-group">
+          <label for="updateParamValue">Param value</label>
+          <input id="updateParamValue" type="text" [(ngModel)]="updateParamValue" name="updateParamValue" />
+        </div>
+      </div>
+      <button type="button" (click)="addUpdateParamPair()">Add param</button>
+      @if (updateParams.length) {
+        <div class="params-list">
+          @for (p of updateParams; track p.key) {
+            <span class="param-tag">{{ p.key }}=<em>{{ p.value }}</em> <button type="button" (click)="removeUpdateParam(p.key)">×</button></span>
+          }
+        </div>
+      }
+      <button type="submit" [disabled]="updateLoading" class="primary">
+        {{ updateLoading ? 'Running...' : 'Run Update' }}
+      </button>
+    </form>
+    @if (updateResult) {
+      <div class="result success">
+        <h4>Result</h4>
+        <pre>{{ updateResult | json }}</pre>
+      </div>
+    }
+    @if (updateError) {
+      <div class="result error">{{ updateError }}</div>
+    }
+  </section>
+</div>

@@ -1,0 +1,38 @@
+<div class="message-container">
+  <h2>Send Message</h2>
+
+  <form (ngSubmit)="sendMessage()">
+    <div class="form-group">
+      <label for="message">Your message</label>
+      <input
+        id="message"
+        type="text"
+        [(ngModel)]="message"
+        name="message"
+        placeholder="Type your message..."
+      />
+    </div>
+
+    <button
+      type="submit"
+      [disabled]="loading || !message.trim()"
+    >
+    {{ loading ? 'Sending...' : 'Send' }}
+    </button>
+  </form>
+
+  @if (result) {
+    <div class="result success">
+      <h3>Response from server</h3>
+      <p><strong>Received:</strong> {{ result.received }}</p>
+      <p><strong>Timestamp:</strong> {{ result.timestamp }}</p>
+    </div>
+  }
+
+  @if (error) {
+    <div class="result error">
+      <h3>Error</h3>
+      <p>{{ error }}</p>
+    </div>
+  }
+</div>
