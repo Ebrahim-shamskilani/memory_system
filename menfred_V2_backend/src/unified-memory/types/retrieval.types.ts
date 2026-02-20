@@ -2,7 +2,8 @@ export type IntentType =
   | 'find_entity'
   | 'find_relationship'
   | 'find_event'
-  | 'find_pattern';
+  | 'find_pattern'
+  | 'recall_conversation';
 
 export interface ResolvedEntity {
   name: string;

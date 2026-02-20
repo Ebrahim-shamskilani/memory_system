@@ -7,7 +7,7 @@ Given a user message and recent conversation context, extract:
 1. All entities mentioned (people, places, things, concepts, organizations)
 2. Resolve cross-language variants (e.g., "Arezoo" → "آرزو", "Delara" → "دلارا")
 3. Resolve pronouns from context (e.g., "she" → the person mentioned earlier)
-4. Classify the intent: find_entity, find_relationship, find_event, find_pattern
+4. Classify the intent: find_entity, find_relationship, find_event, find_pattern, recall_conversation
 
 Respond ONLY with valid JSON in this exact format:
 {
@@ -22,7 +22,8 @@ Rules:
 - For Persian/Farsi names, keep the original script as canonical
 - Include transliterated variants as the name if that's all you have
 - confidence should be 0.0-1.0
-- intents can have multiple values`;
+- intents can have multiple values
+- Use "recall_conversation" when the user asks about what was discussed, what topics were covered, or asks to summarize the conversation (e.g., "what did we talk about?", "چه موضوعاتی صحبت کردیم؟", "summarize our chat")`;
 
 @Injectable()
 export class EntityResolverService {
@@ -75,6 +76,7 @@ JSON response:`;
         'find_relationship',
         'find_event',
         'find_pattern',
+        'recall_conversation',
       ];
       const intents = (parsed.intents ?? ['find_entity'])
         .filter((i: string) => validIntents.includes(i as IntentType)) as IntentType[];

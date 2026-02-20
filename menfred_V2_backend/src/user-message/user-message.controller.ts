@@ -64,6 +64,27 @@ export class UserMessageController {
     }
   }
 
+  @Post('eraseMemory')
+  async eraseMemory() {
+    this.logger.warn('Erase all memory triggered');
+
+    try {
+      const result = await this.unifiedMemory.eraseAllMemory();
+      return {
+        success: true,
+        erased: result,
+        timestamp: new Date().toISOString(),
+      };
+    } catch (error) {
+      this.logger.error(`Erase memory failed: ${(error as Error).message}`);
+      return {
+        success: false,
+        error: (error as Error).message,
+        timestamp: new Date().toISOString(),
+      };
+    }
+  }
+
   @Post('endConversation')
   async endConversation() {
     this.logger.log('End conversation triggered');

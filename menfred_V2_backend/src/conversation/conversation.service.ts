@@ -24,6 +24,11 @@ export class ConversationService {
     return this.activeConversationId;
   }
 
+  clearAll(): void {
+    this.buffers.clear();
+    this.activeConversationId = randomUUID();
+  }
+
   addTurn(
     role: 'user' | 'assistant',
     content: string,

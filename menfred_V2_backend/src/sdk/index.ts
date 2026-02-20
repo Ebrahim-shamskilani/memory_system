@@ -8,7 +8,7 @@ export { MenfredMemoryConfig, MENFRED_MEMORY_CONFIG } from './menfred-memory.con
 export { UnifiedMemoryService } from '../unified-memory/unified-memory.service';
 
 // Return types
-export { MemoryRecallResult, DualWriteResult } from '../unified-memory/types/memory.types';
+export { MemoryRecallResult, DualWriteResult, EraseResult } from '../unified-memory/types/memory.types';
 export { ConsolidationRun, ConsolidationStats } from '../unified-memory/types/consolidation.types';
 export { IngestionResult } from '../unified-memory/ingest/message-ingestor.service';
 

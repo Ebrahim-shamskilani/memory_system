@@ -21,4 +21,12 @@ export interface MenfredMemoryConfig {
   conversation?: {
     maxBufferSize?: number;   // default: 10
   };
+  brain?: {
+    name?: string;            // default: 'Manfred'
+    description?: string;     // default: 'a personal AI memory assistant'
+  };
+  user?: {
+    name?: string;            // default: 'ابراهیم'
+    nameEnglish?: string;     // default: 'Ebrahim'
+  };
 }

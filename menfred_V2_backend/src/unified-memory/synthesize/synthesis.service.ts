@@ -1,34 +1,48 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject, Optional } from '@nestjs/common';
 import { LlmService } from '../../llm/llm.service';
 import { RetrievalContext } from '../types/retrieval.types';
 import { MemoryRecallResult } from '../types/memory.types';
+import { MENFRED_MEMORY_CONFIG, MenfredMemoryConfig } from '../../sdk/menfred-memory.config';
 
-const SYNTHESIS_PROMPT = `You are a memory synthesis engine for a personal AI assistant named Menfred.
-Given retrieved memory facts about the user's life, synthesize a concise and helpful answer to their question.
-
-Facts may include metadata like [timestamp], [confidence], [source], and [SUPERSEDED] markers.
-
-Rules:
-- Use the retrieved facts to answer the question
-- Be concise (3-6 sentences max)
-- If facts are in Persian/Farsi, you can respond in the same language or translate naturally
-- If you don't have enough information, say so honestly
-- Never invent facts not present in the retrieved data
-- Refer to people by their names, not IDs
-
-Handling contradictions and corrections:
-- Facts marked [SUPERSEDED] have been corrected by newer information — prefer the newer version
-- Facts with source "consolidated" are the most authoritative (they result from contradiction resolution)
-- When two facts conflict, prefer the one with the later timestamp
-- When relevant, mention the correction narrative: "initially said X, later corrected to Y"
-- Use confidence scores: higher confidence = more reliable
-- Ignore [SUPERSEDED] facts unless the user specifically asks about history or changes`;
+// SYNTHESIS_PROMPT is now built dynamically via buildSynthesisPrompt() to interpolate config values
 
 @Injectable()
 export class SynthesisService {
   private readonly logger = new Logger(SynthesisService.name);
+  private readonly brainName: string;
+  private readonly userName: string;
+  private readonly userNameEnglish: string;
 
-  constructor(private readonly llm: LlmService) {}
+  constructor(
+    private readonly llm: LlmService,
+    @Inject(MENFRED_MEMORY_CONFIG) @Optional() config?: MenfredMemoryConfig,
+  ) {
+    this.brainName = config?.brain?.name ?? 'Manfred';
+    this.userName = config?.user?.name ?? 'ابراهیم';
+    this.userNameEnglish = config?.user?.nameEnglish ?? 'Ebrahim';
+  }
+
+  private buildSynthesisPrompt(): string {
+    return `You are ${this.brainName}, a memory recall system for ${this.userName} (${this.userNameEnglish}).
+"${this.userName}" / "${this.userNameEnglish}" in the facts IS the person asking — address them as "you" (تو/شما).
+
+Your ONLY job is to return stored facts. You are NOT a reasoning engine.
+
+STRICT RULES:
+- ONLY state facts that exist in the retrieved data — nothing more
+- NEVER calculate, compute, count, compare dates, estimate ages, or do any arithmetic
+- NEVER answer questions that require reasoning, logic, or inference beyond the stored facts
+- NEVER invent, guess, or extrapolate information not present in the data
+- If the question requires calculation (e.g., "how many days until X?", "how old is Y?"), just return the relevant raw facts (e.g., the date of birth) without computing the answer
+- Be concise (1-4 sentences)
+- If facts are in Persian/Farsi, respond in Persian
+- Refer to other people by their names, not IDs
+
+Handling contradictions:
+- Prefer facts marked with source "consolidated" (most authoritative)
+- Prefer later timestamps over earlier ones when two facts conflict
+- Ignore [SUPERSEDED] facts unless the user asks about history`;
+  }
 
   async synthesize(
     originalQuestion: string,
@@ -46,7 +60,7 @@ export class SynthesisService {
 
     const factsText = facts.map((f, i) => `${i + 1}. ${f}`).join('\n');
 
-    const prompt = `${SYNTHESIS_PROMPT}
+    const prompt = `${this.buildSynthesisPrompt()}
 
 Question: "${originalQuestion}"
 

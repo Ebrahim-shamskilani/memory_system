@@ -90,6 +90,21 @@ export class EntityStoreService {
     return record.e.properties;
   }
 
+  async findByName(name: string): Promise<{ chromaId: string } | null> {
+    const result = await this.graphDb.runQuery(
+      `MATCH (e:Entity)
+       WHERE toLower(e.canonicalName) = toLower($name)
+          OR any(a IN e.aliases WHERE toLower(a) = toLower($name))
+       RETURN e.chromaId AS chromaId
+       LIMIT 1`,
+      { name },
+    );
+    if (result.records.length > 0) {
+      return { chromaId: (result.records[0] as any).chromaId };
+    }
+    return null;
+  }
+
   private buildEntityDocument(
     canonicalName: string,
     aliases: string[],

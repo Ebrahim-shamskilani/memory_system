@@ -5,6 +5,7 @@ export interface ConsolidationStats {
   factsConsolidated: number;
   contradictionsFound: number;
   duplicatesMerged: number;
+  entitiesMerged: number;
 }
 
 export interface ConsolidationRun {

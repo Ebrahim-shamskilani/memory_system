@@ -5,7 +5,14 @@ import { SynthesisService } from './synthesize/synthesis.service';
 import { MessageIngestorService, IngestionResult } from './ingest/message-ingestor.service';
 import { ConsolidationService } from './consolidate/consolidation.service';
 import { ConversationService } from '../conversation/conversation.service';
-import { MemoryRecallResult } from './types/memory.types';
+import { GraphDbService } from '../graph-db/graph-db.service';
+import {
+  ChromadbService,
+  COLLECTION_ENTITIES,
+  COLLECTION_RELATIONSHIPS,
+  COLLECTION_EPISODES,
+} from '../chromadb/chromadb.service';
+import { MemoryRecallResult, EraseResult } from './types/memory.types';
 import { ConsolidationRun } from './types/consolidation.types';
 import { CreateEntityDto, CreateRelationshipDto } from './types/entity.types';
 import { CreateEpisodeDto, CreateFactDto } from './types/episode.types';
@@ -22,6 +29,8 @@ export class UnifiedMemoryService {
     private readonly ingestor: MessageIngestorService,
     private readonly consolidation: ConsolidationService,
     private readonly conversation: ConversationService,
+    private readonly graphDb: GraphDbService,
+    private readonly chromaDb: ChromadbService,
   ) {}
 
   /**
@@ -99,6 +108,69 @@ export class UnifiedMemoryService {
     const newConversationId = this.conversation.startNewConversation();
     const consolidationRun = await this.consolidation.consolidate('conversation_end');
     return { newConversationId, consolidation: consolidationRun };
+  }
+
+  /**
+   * Erase all stored memory: Neo4j nodes, ChromaDB documents, and conversation buffers.
+   * This is irreversible.
+   */
+  async eraseAllMemory(): Promise<EraseResult> {
+    this.logger.warn('Erasing ALL memory — this is irreversible');
+
+    const result: EraseResult = {
+      neo4jNodesDeleted: 0,
+      chromaCollectionsCleared: [],
+      conversationBufferCleared: false,
+    };
+
+    // 1. Delete all Neo4j nodes and relationships
+    try {
+      const deleteResult = await this.graphDb.runQuery(
+        `MATCH (n) DETACH DELETE n RETURN count(n) AS deleted`,
+      );
+      const record = deleteResult.records[0] as any;
+      result.neo4jNodesDeleted = record?.deleted ?? 0;
+      this.logger.log(`Neo4j: deleted ${result.neo4jNodesDeleted} nodes`);
+    } catch (error) {
+      this.logger.error(`Neo4j erase failed: ${(error as Error).message}`);
+    }
+
+    // 2. Clear all ChromaDB collections
+    const collections = [COLLECTION_ENTITIES, COLLECTION_RELATIONSHIPS, COLLECTION_EPISODES];
+    for (const collectionName of collections) {
+      try {
+        const col = await this.chromaDb.getCollection(collectionName);
+        const existing = await col.get({ limit: 1 });
+        if (existing.ids.length > 0) {
+          // Get all IDs and delete them
+          const all = await col.get();
+          if (all.ids.length > 0) {
+            await col.delete({ ids: all.ids });
+          }
+        }
+        result.chromaCollectionsCleared.push(collectionName);
+        this.logger.log(`ChromaDB: cleared collection "${collectionName}"`);
+      } catch (error) {
+        this.logger.error(`ChromaDB erase failed for "${collectionName}": ${(error as Error).message}`);
+      }
+    }
+
+    // 3. Clear conversation buffer
+    try {
+      this.conversation.clearAll();
+      result.conversationBufferCleared = true;
+      this.logger.log('Conversation buffer cleared');
+    } catch (error) {
+      this.logger.error(`Conversation buffer clear failed: ${(error as Error).message}`);
+    }
+
+    this.logger.warn(
+      `Erase complete: ${result.neo4jNodesDeleted} Neo4j nodes, ` +
+      `${result.chromaCollectionsCleared.length} ChromaDB collections, ` +
+      `conversation buffer ${result.conversationBufferCleared ? 'cleared' : 'failed'}`,
+    );
+
+    return result;
   }
 
   // --- Store delegation methods ---

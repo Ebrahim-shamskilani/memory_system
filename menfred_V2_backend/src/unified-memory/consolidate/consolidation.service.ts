@@ -1,9 +1,11 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { LlmService } from '../../llm/llm.service';
 import { UnifiedStoreService } from '../store/unified-store.service';
 import { GraphDbService } from '../../graph-db/graph-db.service';
+import { ChromadbService, COLLECTION_ENTITIES } from '../../chromadb/chromadb.service';
 import { ConsolidationStats, ConsolidationRun } from '../types/consolidation.types';
+import { MENFRED_MEMORY_CONFIG, MenfredMemoryConfig } from '../../sdk/menfred-memory.config';
 
 const CONSOLIDATION_MESSAGE_THRESHOLD = 10;
 
@@ -85,11 +87,30 @@ Respond ONLY with valid JSON:
   "reasoning": "why this pattern is/isn't stable enough"
 }`;
 
-const DEDUPLICATION_PROMPT = `You are a memory deduplication engine. Given a list of facts about an entity, identify groups of facts that say the same thing (duplicates or near-duplicates).
+// DEDUPLICATION_PROMPT is now built dynamically via buildDeduplicationPrompt() to interpolate config values
+
+@Injectable()
+export class ConsolidationService {
+  private readonly logger = new Logger(ConsolidationService.name);
+  private messageCounter = 0;
+  private readonly userName: string;
+
+  constructor(
+    private readonly llm: LlmService,
+    private readonly store: UnifiedStoreService,
+    private readonly graphDb: GraphDbService,
+    private readonly chromaDb: ChromadbService,
+    @Inject(MENFRED_MEMORY_CONFIG) @Optional() config?: MenfredMemoryConfig,
+  ) {
+    this.userName = config?.user?.name ?? 'ابراهیم';
+  }
+
+  private buildDeduplicationPrompt(): string {
+    return `You are a memory deduplication engine. Given a list of facts about an entity, identify groups of facts that say the same thing (duplicates or near-duplicates).
 
 Rules:
 - Two facts are duplicates if they convey the same information, even if worded slightly differently
-- "I have a car" and "ابراهیم has a car" and "من ماشین دارم" are all duplicates
+- "I have a car" and "${this.userName} has a car" and "من ماشین دارم" are all duplicates
 - Do NOT merge facts that are genuinely different (e.g., "has a car" vs "has a bike")
 - For each group of duplicates, pick the best-worded version as the canonical content
 - Reference duplicates by their index
@@ -105,17 +126,7 @@ Respond ONLY with valid JSON:
     }
   ]
 }`;
-
-@Injectable()
-export class ConsolidationService {
-  private readonly logger = new Logger(ConsolidationService.name);
-  private messageCounter = 0;
-
-  constructor(
-    private readonly llm: LlmService,
-    private readonly store: UnifiedStoreService,
-    private readonly graphDb: GraphDbService,
-  ) {}
+  }
 
   incrementMessageCounter(): void {
     this.messageCounter++;
@@ -139,6 +150,7 @@ export class ConsolidationService {
         factsConsolidated: 0,
         contradictionsFound: 0,
         duplicatesMerged: 0,
+        entitiesMerged: 0,
       },
     };
 
@@ -159,6 +171,9 @@ export class ConsolidationService {
 
       // Phase E: Duplicate Fact Merging
       await this.phaseE_DeduplicateFacts(run.stats);
+
+      // Phase F: Entity Deduplication
+      await this.phaseF_DeduplicateEntities(run.stats);
     } catch (error) {
       this.logger.error(`Consolidation run ${run.runId} failed: ${(error as Error).message}`);
     }
@@ -170,7 +185,8 @@ export class ConsolidationService {
       `Consolidation run ${run.runId} complete: ` +
       `${run.stats.level3Processed} L3 processed, ${run.stats.level2Created} L2 created, ` +
       `${run.stats.level1Created} L1 created, ${run.stats.factsConsolidated} facts consolidated, ` +
-      `${run.stats.contradictionsFound} contradictions, ${run.stats.duplicatesMerged} duplicates merged`,
+      `${run.stats.contradictionsFound} contradictions, ${run.stats.duplicatesMerged} duplicates merged, ` +
+      `${run.stats.entitiesMerged} entities merged`,
     );
 
     return run;
@@ -464,7 +480,7 @@ JSON response:`;
         .map((f, i) => `[${i}] [${f.createdAt}] [source: ${f.source}] ${f.content}`)
         .join('\n');
 
-      const prompt = `${DEDUPLICATION_PROMPT}
+      const prompt = `${this.buildDeduplicationPrompt()}
 
 Entity: "${entity.name}"
 
@@ -518,6 +534,126 @@ JSON response:`;
           `Phase E failed for entity "${entity.name}": ${(error as Error).message}`,
         );
       }
+    }
+  }
+
+  // ── Phase F: Entity Deduplication ──
+
+  private async phaseF_DeduplicateEntities(stats: ConsolidationStats): Promise<void> {
+    // Find entity groups with duplicate canonicalNames (case-insensitive)
+    const duplicateGroups = await this.graphDb.runQuery(
+      `MATCH (e:Entity)
+       WITH toLower(e.canonicalName) AS lowerName, collect(e) AS entities
+       WHERE size(entities) >= 2
+       RETURN lowerName, [ent IN entities | {
+         chromaId: ent.chromaId,
+         canonicalName: ent.canonicalName,
+         aliases: ent.aliases,
+         createdAt: ent.createdAt
+       }] AS entities`,
+    );
+
+    if (duplicateGroups.records.length === 0) return;
+
+    this.logger.log(`Phase F: Found ${duplicateGroups.records.length} entity name groups with duplicates`);
+
+    for (const group of duplicateGroups.records as any[]) {
+      const entities = group.entities as {
+        chromaId: string;
+        canonicalName: string;
+        aliases: string[];
+        createdAt: string;
+      }[];
+
+      // Pick the oldest entity as canonical (first created)
+      entities.sort((a, b) => {
+        const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return dateA - dateB;
+      });
+
+      const canonical = entities[0];
+      const duplicates = entities.slice(1);
+
+      // Merge aliases from duplicates into canonical
+      const allAliases = new Set<string>(canonical.aliases ?? []);
+      for (const dup of duplicates) {
+        if (dup.canonicalName !== canonical.canonicalName) {
+          allAliases.add(dup.canonicalName);
+        }
+        for (const alias of dup.aliases ?? []) {
+          allAliases.add(alias);
+        }
+      }
+
+      // Update canonical entity's aliases in Neo4j
+      await this.graphDb.runQuery(
+        `MATCH (e:Entity {chromaId: $chromaId})
+         SET e.aliases = $aliases, e.updatedAt = datetime()`,
+        { chromaId: canonical.chromaId, aliases: Array.from(allAliases) },
+      );
+
+      for (const dup of duplicates) {
+        // Re-link all relationships from duplicate → canonical
+        await this.graphDb.runQuery(
+          `MATCH (dup:Entity {chromaId: $dupId})-[r:RELATES_TO]->(target)
+           MERGE (canon:Entity {chromaId: $canonId})-[:RELATES_TO {
+             chromaId: r.chromaId,
+             relationType: r.relationType,
+             description: r.description,
+             confidence: r.confidence
+           }]->(target)
+           DELETE r`,
+          { dupId: dup.chromaId, canonId: canonical.chromaId },
+        );
+
+        await this.graphDb.runQuery(
+          `MATCH (source)-[r:RELATES_TO]->(dup:Entity {chromaId: $dupId})
+           MERGE (source)-[:RELATES_TO {
+             chromaId: r.chromaId,
+             relationType: r.relationType,
+             description: r.description,
+             confidence: r.confidence
+           }]->(canon:Entity {chromaId: $canonId})
+           DELETE r`,
+          { dupId: dup.chromaId, canonId: canonical.chromaId },
+        );
+
+        // Re-link facts
+        await this.graphDb.runQuery(
+          `MATCH (dup:Entity {chromaId: $dupId})-[r:HAS_FACT]->(f:Fact)
+           MERGE (canon:Entity {chromaId: $canonId})-[:HAS_FACT {description: r.description}]->(f)
+           DELETE r`,
+          { dupId: dup.chromaId, canonId: canonical.chromaId },
+        );
+
+        // Re-link episode participations
+        await this.graphDb.runQuery(
+          `MATCH (dup:Entity {chromaId: $dupId})-[r:PARTICIPATED_IN]->(ep:Episode)
+           MERGE (canon:Entity {chromaId: $canonId})-[:PARTICIPATED_IN {role: r.role, description: r.description}]->(ep)
+           DELETE r`,
+          { dupId: dup.chromaId, canonId: canonical.chromaId },
+        );
+
+        // Delete duplicate Entity node from Neo4j
+        await this.graphDb.runQuery(
+          `MATCH (e:Entity {chromaId: $chromaId}) DETACH DELETE e`,
+          { chromaId: dup.chromaId },
+        );
+
+        // Delete duplicate document from ChromaDB
+        try {
+          await this.chromaDb.deleteDocument(COLLECTION_ENTITIES, dup.chromaId);
+        } catch (e) {
+          this.logger.warn(`Failed to delete ChromaDB entity ${dup.chromaId}: ${(e as Error).message}`);
+        }
+
+        stats.entitiesMerged++;
+      }
+
+      this.logger.log(
+        `Phase F: Merged ${duplicates.length} duplicate(s) of "${canonical.canonicalName}" into ${canonical.chromaId}`,
+      );
     }
   }
 

@@ -127,6 +127,9 @@ export class VectorLookupService {
         case 'find_pattern':
           collections.add(COLLECTION_EPISODES);
           break;
+        case 'recall_conversation':
+          collections.add(COLLECTION_EPISODES);
+          break;
       }
     }
 
@@ -136,7 +139,10 @@ export class VectorLookupService {
   private getFiltersForIntents(intents: IntentType[]): Record<string, Record<string, unknown> | undefined> {
     const filters: Record<string, Record<string, unknown> | undefined> = {};
 
-    if (intents.includes('find_event')) {
+    // recall_conversation: no level filter — include Level 3 raw turns
+    if (intents.includes('recall_conversation')) {
+      // No filter: search all episode levels
+    } else if (intents.includes('find_event')) {
       filters[COLLECTION_EPISODES] = { level: { $lte: 2 } };
     } else if (intents.includes('find_pattern')) {
       filters[COLLECTION_EPISODES] = { level: { $lte: 1 } };

@@ -53,6 +53,15 @@ export class RetrievalAgentService {
       iterations: 0,
     };
 
+    // For recall_conversation intent: inject conversation buffer as facts
+    if (resolution.intents.includes('recall_conversation') && conversationContext) {
+      const turns = this.conversationService.getRecentTurns();
+      for (const turn of turns) {
+        context.facts.push(`[${turn.timestamp}] [conversation turn] ${turn.role}: ${turn.content}`);
+      }
+      this.logger.log(`Injected ${turns.length} conversation turns as facts for recall_conversation`);
+    }
+
     // Iterative retrieval loop
     let currentQuery = resolution.resolvedQuery;
 

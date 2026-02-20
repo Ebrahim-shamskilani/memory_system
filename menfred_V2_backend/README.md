@@ -65,6 +65,14 @@ import { MenfredMemoryModule } from '@menfred/memory';
       conversation: {
         maxBufferSize: 10,           // optional, default: 10
       },
+      brain: {
+        name: 'Manfred',             // optional, default: 'Manfred'
+        description: 'a personal AI memory assistant', // optional
+      },
+      user: {
+        name: 'ابراهیم',              // optional, default: 'ابراهیم'
+        nameEnglish: 'Ebrahim',      // optional, default: 'Ebrahim'
+      },
     }),
   ],
 })
@@ -106,6 +114,10 @@ export class BrainService {
 | `chromadb` | `dataPath` | `string?` | `'./chroma_data'` | ChromaDB data directory |
 | `chromadb` | `managed` | `boolean?` | `true` (standalone) | Whether to auto-start ChromaDB. Set `false` for SDK usage. |
 | `conversation` | `maxBufferSize` | `number?` | `10` | Max conversation turns to keep in buffer |
+| `brain` | `name` | `string?` | `'Manfred'` | The assistant's name, used in LLM prompts |
+| `brain` | `description` | `string?` | `'a personal AI memory assistant'` | Short description of the assistant |
+| `user` | `name` | `string?` | `'ابراهیم'` | The user's name (primary script) |
+| `user` | `nameEnglish` | `string?` | `'Ebrahim'` | The user's name in English/Latin script |
 
 ## API Reference
 
@@ -131,7 +143,7 @@ Ingest-only -- extract and store information without generating a recall respons
 
 #### `triggerConsolidation()`
 
-Manually trigger the consolidation pipeline (summarization, pattern detection, contradiction resolution, fact promotion, deduplication).
+Manually trigger the consolidation pipeline (summarization, pattern detection, contradiction resolution, fact promotion, fact deduplication, entity deduplication).
 
 **Returns:** `Promise<ConsolidationRun>`
 
@@ -140,6 +152,12 @@ Manually trigger the consolidation pipeline (summarization, pattern detection, c
 Start a new conversation and trigger consolidation of the previous one.
 
 **Returns:** `Promise<{ newConversationId: string; consolidation: ConsolidationRun }>`
+
+#### `eraseAllMemory()`
+
+Irreversibly delete all stored memory: all Neo4j nodes/relationships, all ChromaDB documents, and the in-memory conversation buffer. Use with caution.
+
+**Returns:** `Promise<EraseResult>`
 
 #### Store Delegation Methods
 
@@ -205,8 +223,46 @@ Start a new conversation and trigger consolidation of the previous one.
 }
 ```
 
+### `ConsolidationStats`
+
+```typescript
+{
+  level3Processed: number;
+  level2Created: number;
+  level1Created: number;
+  factsConsolidated: number;
+  contradictionsFound: number;
+  duplicatesMerged: number;
+  entitiesMerged: number;
+}
+```
+
+### `EraseResult`
+
+```typescript
+{
+  neo4jNodesDeleted: number;
+  chromaCollectionsCleared: string[];   // e.g. ['entities', 'relationships', 'episodes']
+  conversationBufferCleared: boolean;
+}
+```
+
+## REST API (Standalone)
+
+When running as the standalone backend (`npm run start:dev`), these endpoints are available:
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/userMessage` | Send a message -- ingests and recalls |
+| `POST` | `/userMessage/consolidate` | Manually trigger consolidation |
+| `POST` | `/userMessage/endConversation` | End conversation + consolidate |
+| `POST` | `/userMessage/eraseMemory` | Erase all stored memory (irreversible) |
+
 ## Notes
 
 - When using as an SDK (`MenfredMemoryModule.forRoot()`), set `chromadb.managed: false` -- the consumer is responsible for running ChromaDB externally.
 - The standalone app (`npm run start:dev`) continues to work unchanged using environment variables.
 - The module is registered as `global: true`, so `UnifiedMemoryService` is available in any module without additional imports.
+- Entity ingestion uses two-phase resolution: Neo4j name lookup first, then vector similarity fallback -- preventing duplicates from different descriptions of the same entity.
+- Consolidation includes entity deduplication (Phase F) that merges duplicate entities by name, re-linking all relationships, facts, and episode participations to the canonical entity.
+- Brain and user identity are configurable via `brain` and `user` config sections. All defaults work out of the box.

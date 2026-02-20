@@ -32,3 +32,9 @@ export interface MemoryRecallResult {
   };
   iterations: number;
 }
+
+export interface EraseResult {
+  neo4jNodesDeleted: number;
+  chromaCollectionsCleared: string[];
+  conversationBufferCleared: boolean;
+}

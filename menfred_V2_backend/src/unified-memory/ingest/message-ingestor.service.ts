@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject, Optional } from '@nestjs/common';
 import { LlmService } from '../../llm/llm.service';
 import { UnifiedStoreService } from '../store/unified-store.service';
 import { EntityStoreService } from '../store/entity-store.service';
@@ -6,53 +6,12 @@ import { VectorLookupService } from '../retrieve/vector-lookup.service';
 import { ConversationService } from '../../conversation/conversation.service';
 import { EntityType } from '../types/entity.types';
 import { ExtractedEvent } from '../types/episode.types';
+import { MENFRED_MEMORY_CONFIG, MenfredMemoryConfig } from '../../sdk/menfred-memory.config';
 
 const ENTITY_SIMILARITY_THRESHOLD = 0.4; // below this distance = same entity
 const FACT_SIMILARITY_THRESHOLD = 0.15;  // below this distance = duplicate fact (tighter than entities)
 
-const EXTRACTION_PROMPT = `You are a memory extraction engine for a personal AI assistant.
-Given a user message (may be informal, have typos, no punctuation, mixed languages), extract ALL:
-
-1. **entities**: people, places, things, concepts, organizations mentioned
-2. **facts**: stable pieces of knowledge stated or implied (general truths: "I live in Berlin", "my sister's name is Delara")
-3. **events**: things that happened at a specific time ("yesterday I climbed a mountain", "last week I went to the dentist")
-4. **relationships**: connections between entities
-
-The user's name is ابراهیم (Ebrahim). "من" (I/me) always refers to ابراهیم.
-
-**Distinguishing facts vs events:**
-- A **fact** is a general/stable truth: "من تو برلین زندگی می کنم" (I live in Berlin), "دلارا خواهرم هست" (Delara is my sister)
-- An **event** happened at a specific time: "دیروز رفتم کوه" (yesterday I went hiking), "هفته پیش دندون پزشک رفتم" (last week I went to the dentist)
-- If something has a time reference (yesterday, last week, today, etc), it's an event
-- If it's a general truth with no time anchor, it's a fact
-
-Today's date is: {{TODAY_DATE}}
-Use this to resolve relative time references (e.g., "yesterday" → actual date).
-
-Rules:
-- Handle informal Persian (e.g., "تو" instead of "در", "می کنن" instead of "می کنند")
-- Handle missing punctuation — split sentences by meaning
-- Keep canonical names in their original script (Persian names in Persian)
-- For each entity, provide a short description based ONLY on what this message tells us
-- For relationships, describe what this message tells us about the connection
-- For events, list which entities participated
-- If nothing meaningful to extract, return empty arrays
-
-Respond ONLY with valid JSON:
-{
-  "entities": [
-    {"name": "canonical name in original script", "type": "person|place|thing|concept|organization", "description": "what we learn from THIS message"}
-  ],
-  "facts": [
-    {"content": "clear statement of the fact", "about_entities": ["entity name 1", "entity name 2"]}
-  ],
-  "events": [
-    {"description": "what happened", "participants": ["entity name 1"], "timestampHint": "raw time reference from message", "resolvedTimestamp": "ISO date or null if cannot resolve"}
-  ],
-  "relationships": [
-    {"source": "entity name", "target": "entity name", "type": "short_type", "description": "description of the relationship"}
-  ]
-}`;
+// EXTRACTION_PROMPT is now built dynamically via buildExtractionPrompt() to interpolate config values
 
 interface ExtractedEntity {
   name: string;
@@ -93,6 +52,9 @@ export interface IngestionResult {
 export class MessageIngestorService {
   private readonly logger = new Logger(MessageIngestorService.name);
   private readonly lastEpisodeMap = new Map<string, string>(); // conversationId → last Level 3 chromaId
+  private readonly userName: string;
+  private readonly userNameEnglish: string;
+  private readonly brainName: string;
 
   constructor(
     private readonly llm: LlmService,
@@ -100,7 +62,67 @@ export class MessageIngestorService {
     private readonly entityStore: EntityStoreService,
     private readonly vectorLookup: VectorLookupService,
     private readonly conversation: ConversationService,
-  ) {}
+    @Inject(MENFRED_MEMORY_CONFIG) @Optional() config?: MenfredMemoryConfig,
+  ) {
+    this.userName = config?.user?.name ?? 'ابراهیم';
+    this.userNameEnglish = config?.user?.nameEnglish ?? 'Ebrahim';
+    this.brainName = config?.brain?.name ?? 'Manfred';
+  }
+
+  private buildExtractionPrompt(): string {
+    return `You are a memory extraction engine for a personal AI assistant named ${this.brainName}.
+Given a user message (may be informal, have typos, no punctuation, mixed languages), extract ALL:
+
+1. **entities**: people, places, things, concepts, organizations mentioned
+2. **facts**: stable pieces of knowledge stated or implied
+3. **events**: things that happened at a specific time
+4. **relationships**: connections between entities
+
+**CRITICAL IDENTITY RULES:**
+- The user's name is ${this.userName} (${this.userNameEnglish}).
+- ALL first-person references ("من", "I", "me", "my", "مال من", "م") MUST be resolved to "${this.userName}".
+- "you/تو/شما" directed at the assistant refers to "${this.brainName}".
+- NEVER use "من" or "I" in entity names, fact content, or about_entities. ALWAYS replace with "${this.userName}".
+- "${this.userName}" MUST appear in about_entities for ANY fact about the user.
+
+**Examples of correct pronoun resolution:**
+- User says: "من تو برلین زندگی می کنم" → fact: "${this.userName} در برلین زندگی می کند", about_entities: ["${this.userName}", "برلین"]
+- User says: "دخترم دلاراست" → fact: "دلارا دختر ${this.userName} است", about_entities: ["${this.userName}", "دلارا"], relationship: {source: "${this.userName}", target: "دلارا", type: "father_daughter"}
+- User says: "اسم تو ${this.brainName} ه" → fact: "اسم دستیار هوشمند ${this.brainName} است", about_entities: ["${this.brainName}"]
+- User says: "یه خواهر دارم اسمش آرزو" → fact: "آرزو خواهر ${this.userName} است", about_entities: ["${this.userName}", "آرزو"], relationship: {source: "${this.userName}", target: "آرزو", type: "sibling"}
+
+**Distinguishing facts vs events:**
+- A **fact** is a general/stable truth (no time anchor): "من تو برلین زندگی می کنم", "دلارا خواهرم هست"
+- An **event** happened at a specific time: "دیروز رفتم کوه", "هفته پیش دندون پزشک رفتم"
+
+Today's date is: {{TODAY_DATE}}
+Use this to resolve relative time references (e.g., "yesterday" → actual date).
+
+Rules:
+- Handle informal Persian (e.g., "تو" instead of "در", "می کنن" instead of "می کنند")
+- Handle missing punctuation — split sentences by meaning
+- Keep canonical names in their original script (Persian names in Persian)
+- For each entity, provide a short description based ONLY on what this message tells us
+- For relationships, describe what this message tells us about the connection
+- For events, list which entities participated
+- If nothing meaningful to extract, return empty arrays
+
+Respond ONLY with valid JSON:
+{
+  "entities": [
+    {"name": "canonical name in original script", "type": "person|place|thing|concept|organization", "description": "what we learn from THIS message"}
+  ],
+  "facts": [
+    {"content": "clear statement using entity names NOT pronouns", "about_entities": ["entity name 1", "entity name 2"]}
+  ],
+  "events": [
+    {"description": "what happened", "participants": ["entity name 1"], "timestampHint": "raw time reference from message", "resolvedTimestamp": "ISO date or null if cannot resolve"}
+  ],
+  "relationships": [
+    {"source": "entity name", "target": "entity name", "type": "short_type", "description": "description of the relationship"}
+  ]
+}`;
+  }
 
   async ingest(message: string): Promise<IngestionResult> {
     const result: IngestionResult = {
@@ -141,6 +163,9 @@ export class MessageIngestorService {
     const extraction = await this.extract(message);
     if (!extraction) return result;
 
+    // Step 2b: Post-process — normalize first-person references the LLM may have missed
+    this.normalizeFirstPerson(extraction);
+
     this.logger.log(
       `Extracted: ${extraction.entities.length} entities, ${extraction.facts.length} facts, ${extraction.events.length} events, ${extraction.relationships.length} relationships`,
     );
@@ -149,15 +174,15 @@ export class MessageIngestorService {
     // Map: extracted name → chromaId (for linking facts/relationships)
     const entityMap = new Map<string, string>();
 
-    // Always ensure ابراهیم (the user) is in the map
+    // Always ensure the user entity is in the map
     const userEntity = await this.resolveOrCreateEntity({
-      name: 'ابراهیم',
+      name: this.userName,
       type: 'person',
       description: 'The user of the system',
     });
     if (userEntity) {
-      entityMap.set('ابراهیم', userEntity.chromaId);
-      entityMap.set('Ebrahim', userEntity.chromaId);
+      entityMap.set(this.userName, userEntity.chromaId);
+      entityMap.set(this.userNameEnglish, userEntity.chromaId);
       if (userEntity.isNew) result.entitiesCreated++;
       else result.entitiesResolved++;
     }
@@ -165,7 +190,7 @@ export class MessageIngestorService {
     for (const entity of extraction.entities) {
       // Skip if it's the user themselves
       const lowerName = entity.name.toLowerCase();
-      if (lowerName === 'ابراهیم' || lowerName === 'ebrahim') {
+      if (lowerName === this.userName.toLowerCase() || lowerName === this.userNameEnglish.toLowerCase()) {
         continue;
       }
 
@@ -303,7 +328,7 @@ export class MessageIngestorService {
   private async extract(message: string): Promise<ExtractionResult | null> {
     const context = this.conversation.getContextString();
     const todayDate = new Date().toISOString().split('T')[0];
-    const promptWithDate = EXTRACTION_PROMPT.replace('{{TODAY_DATE}}', todayDate);
+    const promptWithDate = this.buildExtractionPrompt().replace('{{TODAY_DATE}}', todayDate);
 
     const prompt = `${promptWithDate}
 
@@ -361,14 +386,24 @@ JSON response:`;
   private async resolveOrCreateEntity(
     entity: ExtractedEntity,
   ): Promise<{ chromaId: string; isNew: boolean } | null> {
-    // Search for existing entity by name in vector DB
+    // Phase 1: Neo4j name lookup (exact match on canonicalName or aliases)
+    try {
+      const nameMatch = await this.entityStore.findByName(entity.name);
+      if (nameMatch) {
+        this.logger.log(`Resolved "${entity.name}" → existing entity via name lookup`);
+        return { chromaId: nameMatch.chromaId, isNew: false };
+      }
+    } catch (e) {
+      this.logger.warn(`Name lookup failed for "${entity.name}": ${(e as Error).message}`);
+    }
+
+    // Phase 2: Vector similarity fallback
     const searchResults = await this.vectorLookup.searchEntities(entity.name, 3);
 
-    // Check if any result is close enough to be the same entity
     for (const result of searchResults) {
       if (result.distance < ENTITY_SIMILARITY_THRESHOLD) {
         this.logger.log(
-          `Resolved "${entity.name}" → existing entity (distance: ${result.distance.toFixed(3)})`,
+          `Resolved "${entity.name}" → existing entity via vector (distance: ${result.distance.toFixed(3)})`,
         );
         return { chromaId: result.chromaId, isNew: false };
       }
@@ -419,5 +454,69 @@ JSON response:`;
     const valid: EntityType[] = ['person', 'place', 'thing', 'concept', 'organization'];
     const normalized = (type ?? '').toLowerCase().trim();
     return valid.includes(normalized as EntityType) ? (normalized as EntityType) : 'thing';
+  }
+
+  /**
+   * Post-process extraction to fix first-person pronoun references the LLM may have missed.
+   * Replaces "من", "I", "me" with the user's name in entities, facts, relationships, and events.
+   */
+  private normalizeFirstPerson(extraction: ExtractionResult): void {
+    const firstPersonPatterns = ['من', 'i', 'me', 'my', 'myself'];
+    const brainPatterns = ['تو', 'you', 'your'];
+
+    const isFirstPerson = (name: string) =>
+      firstPersonPatterns.includes(name.toLowerCase().trim());
+    const isBrainRef = (name: string) =>
+      brainPatterns.includes(name.toLowerCase().trim());
+
+    // Normalize entity names
+    for (const entity of extraction.entities) {
+      if (isFirstPerson(entity.name)) {
+        entity.name = this.userName;
+      } else if (isBrainRef(entity.name)) {
+        entity.name = this.brainName;
+      }
+    }
+
+    // Normalize fact content and about_entities
+    for (const fact of extraction.facts) {
+      // Replace first-person in about_entities
+      fact.about_entities = fact.about_entities.map((name) => {
+        if (isFirstPerson(name)) return this.userName;
+        if (isBrainRef(name)) return this.brainName;
+        return name;
+      });
+
+      // If fact content contains first-person patterns but user is not in about_entities, add them
+      const contentLower = fact.content.toLowerCase();
+      const mentionsFirstPerson = firstPersonPatterns.some((p) =>
+        contentLower.includes(p),
+      );
+      const hasUser = fact.about_entities.some(
+        (name) =>
+          name.toLowerCase() === this.userName.toLowerCase() ||
+          name.toLowerCase() === this.userNameEnglish.toLowerCase(),
+      );
+      if (mentionsFirstPerson && !hasUser) {
+        fact.about_entities.push(this.userName);
+      }
+    }
+
+    // Normalize relationship source/target
+    for (const rel of extraction.relationships) {
+      if (isFirstPerson(rel.source)) rel.source = this.userName;
+      if (isFirstPerson(rel.target)) rel.target = this.userName;
+      if (isBrainRef(rel.source)) rel.source = this.brainName;
+      if (isBrainRef(rel.target)) rel.target = this.brainName;
+    }
+
+    // Normalize event participants
+    for (const event of extraction.events) {
+      event.participants = event.participants.map((name) => {
+        if (isFirstPerson(name)) return this.userName;
+        if (isBrainRef(name)) return this.brainName;
+        return name;
+      });
+    }
   }
 }
