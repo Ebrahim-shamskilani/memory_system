@@ -1,38 +1,105 @@
-<div class="message-container">
-  <h2>Send Message</h2>
-
-  <form (ngSubmit)="sendMessage()">
-    <div class="form-group">
-      <label for="message">Your message</label>
-      <input
-        id="message"
-        type="text"
-        [(ngModel)]="message"
-        name="message"
-        placeholder="Type your message..."
-      />
-    </div>
-
+<div class="chat-container">
+  <div class="chat-header">
+    <h2>Menfred Memory</h2>
     <button
-      type="submit"
-      [disabled]="loading || !message.trim()"
+      class="btn-end"
+      (click)="endConversation()"
+      [disabled]="loading"
+      title="End conversation & consolidate"
     >
-    {{ loading ? 'Sending...' : 'Send' }}
+      New Chat
     </button>
+  </div>
+
+  <div class="chat-body" #chatBody>
+    @if (messages.length === 0) {
+      <div class="empty-state">
+        <p>Send a message to start a conversation with Menfred's memory system.</p>
+      </div>
+    }
+
+    @for (msg of messages; track $index) {
+      <div
+        class="message"
+        [class.user]="msg.role === 'user'"
+        [class.assistant]="msg.role === 'assistant'"
+        [class.system]="msg.role === 'system'"
+        [class.error]="msg.error"
+      >
+        <div class="message-label">
+          @if (msg.role === 'user') { You }
+          @else if (msg.role === 'assistant') { Menfred }
+          @else { System }
+        </div>
+        <div class="message-bubble">
+          <p class="message-text">{{ msg.content }}</p>
+
+          @if (hasDetails(msg)) {
+            <button class="btn-details" (click)="toggleDetails($index)">
+              {{ expandedIndex === $index ? 'Hide details' : 'Show details' }}
+            </button>
+
+            @if (expandedIndex === $index) {
+              <div class="details">
+                @if (msg.iterations !== undefined) {
+                  <div class="detail-row">
+                    <span class="detail-label">Retrieval iterations:</span>
+                    <span>{{ msg.iterations }}</span>
+                  </div>
+                }
+                @if (msg.sources) {
+                  <div class="detail-row">
+                    <span class="detail-label">Sources used:</span>
+                    <span>{{ getTotalSources(msg.sources) }} total</span>
+                  </div>
+                  <div class="sources-breakdown">
+                    <span>Entities: {{ msg.sources.entities.length }}</span>
+                    <span>Relationships: {{ msg.sources.relationships.length }}</span>
+                    <span>Episodes: {{ msg.sources.episodes.length }}</span>
+                    <span>Facts: {{ msg.sources.facts.length }}</span>
+                  </div>
+                }
+                @if (msg.ingestion) {
+                  <div class="detail-section">
+                    <span class="detail-label">Ingestion:</span>
+                    <div class="ingestion-stats">
+                      <span>{{ msg.ingestion.entitiesCreated }} new entities</span>
+                      <span>{{ msg.ingestion.entitiesResolved }} resolved</span>
+                      <span>{{ msg.ingestion.factsCreated }} facts ({{ msg.ingestion.factsSkippedDuplicate }} dupes skipped)</span>
+                      <span>{{ msg.ingestion.relationshipsCreated }} relationships</span>
+                      <span>{{ msg.ingestion.eventsCreated }} events</span>
+                    </div>
+                  </div>
+                }
+              </div>
+            }
+          }
+        </div>
+        <div class="message-time">{{ msg.timestamp | date:'shortTime' }}</div>
+      </div>
+    }
+
+    @if (loading) {
+      <div class="message assistant">
+        <div class="message-label">Menfred</div>
+        <div class="message-bubble typing">
+          <span class="dot"></span>
+          <span class="dot"></span>
+          <span class="dot"></span>
+        </div>
+      </div>
+    }
+  </div>
+
+  <form class="chat-input" (ngSubmit)="sendMessage()">
+    <input
+      type="text"
+      [(ngModel)]="message"
+      name="message"
+      placeholder="Type a message..."
+      [disabled]="loading"
+      autocomplete="off"
+    />
+    <button type="submit" [disabled]="loading || !message.trim()">Send</button>
   </form>
-
-  @if (result) {
-    <div class="result success">
-      <h3>Response from server</h3>
-      <p><strong>Received:</strong> {{ result.received }}</p>
-      <p><strong>Timestamp:</strong> {{ result.timestamp }}</p>
-    </div>
-  }
-
-  @if (error) {
-    <div class="result error">
-      <h3>Error</h3>
-      <p>{{ error }}</p>
-    </div>
-  }
 </div>
