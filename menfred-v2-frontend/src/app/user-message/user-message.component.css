@@ -223,6 +223,94 @@
   40% { transform: scale(1); opacity: 1; }
 }
 
+/* ── Thinking section (live streaming) ── */
+.thinking-section.live {
+  padding: 0.5rem 0;
+  border-bottom: 1px dashed #e0e0e0;
+  margin-bottom: 0.5rem;
+}
+
+.thinking-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #7b1fa2;
+  margin-bottom: 0.35rem;
+}
+
+.thinking-text {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #616161;
+  white-space: pre-wrap;
+  line-height: 1.4;
+  font-style: italic;
+}
+
+.pulse-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #7b1fa2;
+  animation: pulse 1.2s infinite ease-in-out;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.3; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1.1); }
+}
+
+.blink-cursor {
+  animation: blink 0.8s step-end infinite;
+  font-weight: 300;
+  color: #9e9e9e;
+}
+
+.blink-cursor.hidden {
+  visibility: hidden;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.streaming-bubble {
+  min-width: 120px;
+}
+
+/* ── Thinking section (completed messages) ── */
+.thinking-section.completed {
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px dashed #e0e0e0;
+}
+
+.btn-thinking-toggle {
+  display: inline-block;
+  padding: 0;
+  border: none;
+  background: none;
+  color: #7b1fa2;
+  font-size: 0.72rem;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.btn-thinking-toggle:hover {
+  color: #4a148c;
+}
+
+.thinking-content {
+  margin-top: 0.3rem;
+  padding: 0.4rem 0.6rem;
+  background: #f3e5f5;
+  border-radius: 6px;
+}
+
 /* ── Input bar ── */
 .chat-input {
   display: flex;

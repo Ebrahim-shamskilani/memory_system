@@ -14,6 +14,8 @@ import {
   COLLECTION_EPISODES,
 } from '../chromadb/chromadb.service';
 import { MemoryRecallResult, EraseResult } from './types/memory.types';
+import { CognitionEvent } from './types/cognition.types';
+import { CognitionService } from './cognition/cognition.service';
 import { ConsolidationRun } from './types/consolidation.types';
 import { CreateEntityDto, CreateRelationshipDto } from './types/entity.types';
 import { CreateEpisodeDto, CreateFactDto } from './types/episode.types';
@@ -33,6 +35,7 @@ export class UnifiedMemoryService {
     private readonly entityResolver: EntityResolverService,
     private readonly graphDb: GraphDbService,
     private readonly chromaDb: ChromadbService,
+    private readonly cognition: CognitionService,
   ) {}
 
   /**
@@ -54,29 +57,37 @@ export class UnifiedMemoryService {
       `Intent classification: [${resolution.intents.join(', ')}] → ${shouldIngest ? 'INGEST + RECALL' : 'RECALL only'}`,
     );
 
-    // Step 1: INGEST — only if message provides new information
+    // Steps 1 + 2: Run INGEST and RECALL in parallel.
+    // Ingest creates NEW entries; recall searches EXISTING entries — safe to parallelize.
+    // This avoids the sequential bottleneck (extraction LLM call blocking recall).
+    const emptyIngestion: IngestionResult = {
+      entitiesCreated: 0,
+      entitiesResolved: 0,
+      factsCreated: 0,
+      factsSkippedDuplicate: 0,
+      relationshipsCreated: 0,
+      relationshipsSkippedDuplicate: 0,
+      episodeCreated: false,
+      eventsCreated: 0,
+    };
+
     let ingestion: IngestionResult;
+    let context: import('./types/retrieval.types').RetrievalContext;
+
     if (shouldIngest) {
-      ingestion = await this.ingestor.ingest(message);
+      [ingestion, context] = await Promise.all([
+        this.ingestor.ingest(message),
+        this.retrievalAgent.retrieve(message, resolution),
+      ]);
       this.logger.log(
         `Ingested: ${ingestion.entitiesCreated} new entities, ${ingestion.factsCreated} facts, ${ingestion.relationshipsCreated} relationships`,
       );
     } else {
-      ingestion = {
-        entitiesCreated: 0,
-        entitiesResolved: 0,
-        factsCreated: 0,
-        factsSkippedDuplicate: 0,
-        relationshipsCreated: 0,
-        relationshipsSkippedDuplicate: 0,
-        episodeCreated: false,
-        eventsCreated: 0,
-      };
       this.logger.log('Skipping ingestion — message is a question/query, not new information');
+      ingestion = emptyIngestion;
+      context = await this.retrievalAgent.retrieve(message, resolution);
     }
 
-    // Step 2: RECALL — retrieve relevant memories and synthesize answer (reuse pre-computed resolution)
-    const context = await this.retrievalAgent.retrieve(message, resolution);
     const result = await this.synthesis.synthesize(message, context);
 
     this.logger.log(
@@ -92,6 +103,13 @@ export class UnifiedMemoryService {
     }
 
     return { ...result, ingestion };
+  }
+
+  /**
+   * Streaming cognition pipeline: think → ingest → speak.
+   */
+  async *processMessageStream(message: string): AsyncGenerator<CognitionEvent> {
+    yield* this.cognition.process(message);
   }
 
   /**

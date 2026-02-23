@@ -12,7 +12,7 @@
   </div>
 
   <div class="chat-body" #chatBody>
-    @if (messages.length === 0) {
+    @if (messages.length === 0 && !loading) {
       <div class="empty-state">
         <p>Send a message to start a conversation with Menfred's memory system.</p>
       </div>
@@ -32,6 +32,20 @@
           @else { System }
         </div>
         <div class="message-bubble">
+          <!-- Collapsible thinking for completed messages -->
+          @if (msg.thinking) {
+            <div class="thinking-section completed">
+              <button class="btn-thinking-toggle" (click)="toggleThinking($index)">
+                {{ msg.thinkingExpanded ? 'Hide thinking' : 'Show thinking' }}
+              </button>
+              @if (msg.thinkingExpanded) {
+                <div class="thinking-content">
+                  <p class="thinking-text">{{ msg.thinking }}</p>
+                </div>
+              }
+            </div>
+          }
+
           <p class="message-text">{{ msg.content }}</p>
 
           @if (hasDetails(msg)) {
@@ -41,10 +55,10 @@
 
             @if (expandedIndex === $index) {
               <div class="details">
-                @if (msg.iterations !== undefined) {
+                @if (msg.cogIterations !== undefined) {
                   <div class="detail-row">
-                    <span class="detail-label">Retrieval iterations:</span>
-                    <span>{{ msg.iterations }}</span>
+                    <span class="detail-label">Cognition iterations:</span>
+                    <span>{{ msg.cogIterations }}</span>
                   </div>
                 }
                 @if (msg.sources) {
@@ -79,13 +93,41 @@
       </div>
     }
 
+    <!-- Live streaming indicator -->
     @if (loading) {
       <div class="message assistant">
         <div class="message-label">Menfred</div>
-        <div class="message-bubble typing">
-          <span class="dot"></span>
-          <span class="dot"></span>
-          <span class="dot"></span>
+        <div class="message-bubble streaming-bubble">
+          <!-- Thinking phase -->
+          @if (isThinking || thinkingText) {
+            <div class="thinking-section live">
+              @if (thinkingTitle) {
+                <div class="thinking-title">
+                  @if (isThinking) {
+                    <span class="pulse-dot"></span>
+                  }
+                  <span>{{ thinkingTitle }}</span>
+                </div>
+              }
+              @if (thinkingText) {
+                <p class="thinking-text">{{ thinkingText }}<span class="blink-cursor" [class.hidden]="!isThinking">|</span></p>
+              }
+            </div>
+          }
+
+          <!-- Answer phase -->
+          @if (isSpeaking && answerText) {
+            <p class="message-text">{{ answerText }}<span class="blink-cursor">|</span></p>
+          }
+
+          <!-- Initial loading (before any events arrive) -->
+          @if (!isThinking && !thinkingText && !isSpeaking) {
+            <div class="typing">
+              <span class="dot"></span>
+              <span class="dot"></span>
+              <span class="dot"></span>
+            </div>
+          }
         </div>
       </div>
     }

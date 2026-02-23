@@ -14,6 +14,7 @@ import { EmbeddingService } from './retrieve/embedding.service';
 import { SynthesisService } from './synthesize/synthesis.service';
 import { MessageIngestorService } from './ingest/message-ingestor.service';
 import { ConsolidationService } from './consolidate/consolidation.service';
+import { CognitionService } from './cognition/cognition.service';
 
 @Module({
   imports: [GraphDbModule],
@@ -36,9 +37,11 @@ import { ConsolidationService } from './consolidate/consolidation.service';
     ConsolidationService,
     // Synthesis layer
     SynthesisService,
+    // Cognition layer
+    CognitionService,
     // Top-level orchestrator
     UnifiedMemoryService,
   ],
-  exports: [UnifiedMemoryService, UnifiedStoreService, EmbeddingService],
+  exports: [UnifiedMemoryService, UnifiedStoreService, EmbeddingService, CognitionService],
 })
 export class UnifiedMemoryModule {}

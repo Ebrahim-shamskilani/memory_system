@@ -55,6 +55,37 @@ export class LlmService {
     return data.response ?? '';
   }
 
+  async *generateStream(params: LlmGenerateParams): AsyncGenerator<string> {
+    const { model, prompt, options } = params;
+    const response = await fetch(`${this.ollamaUrl}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, prompt, stream: true, options: options ?? {} }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Ollama error: ${response.status} ${response.statusText}`);
+    }
+
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop()!;
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const parsed = JSON.parse(line);
+        if (parsed.response) yield parsed.response;
+        if (parsed.done) return;
+      }
+    }
+  }
+
   async generateJson<T = unknown>(
     params: LlmGenerateParams,
     maxRetries = 2,

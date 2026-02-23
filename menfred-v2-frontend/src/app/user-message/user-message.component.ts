@@ -1,9 +1,9 @@
-import { Component, ElementRef, ViewChild } from '@angular/core';
+import { Component, ElementRef, NgZone, ViewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { CommonModule } from '@angular/common';
 import {
   UserMessageService,
-  SendMessageResponse,
+  CognitionEvent,
   IngestionStats,
   MemorySources,
 } from './user-message.service';
@@ -12,10 +12,13 @@ interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: string;
+  thinking?: string;
   sources?: MemorySources;
   ingestion?: IngestionStats;
   iterations?: number;
+  cogIterations?: number;
   error?: boolean;
+  thinkingExpanded?: boolean;
 }
 
 @Component({
@@ -30,15 +33,24 @@ export class UserMessageComponent {
   loading = false;
   expandedIndex: number | null = null;
 
+  // Streaming state
+  thinkingTitle = '';
+  thinkingText = '';
+  answerText = '';
+  isThinking = false;
+  isSpeaking = false;
+
   @ViewChild('chatBody') private chatBody!: ElementRef;
 
-  constructor(private userMessageService: UserMessageService) {}
+  constructor(
+    private userMessageService: UserMessageService,
+    private zone: NgZone,
+  ) {}
 
   sendMessage() {
     const text = this.message.trim();
     if (!text) return;
 
-    // Add user message
     this.messages.push({
       role: 'user',
       content: text,
@@ -47,41 +59,113 @@ export class UserMessageComponent {
 
     this.message = '';
     this.loading = true;
+    this.isThinking = false;
+    this.isSpeaking = false;
+    this.thinkingTitle = '';
+    this.thinkingText = '';
+    this.answerText = '';
     this.scrollToBottom();
 
-    this.userMessageService.sendMessage(text).subscribe({
-      next: (response: SendMessageResponse) => {
-        if (response.success && response.answer) {
-          this.messages.push({
-            role: 'assistant',
-            content: response.answer,
-            timestamp: response.timestamp,
-            sources: response.sources,
-            ingestion: response.ingestion,
-            iterations: response.iterations,
-          });
-        } else {
-          this.messages.push({
-            role: 'assistant',
-            content: response.error || 'No answer returned.',
-            timestamp: response.timestamp,
-            error: true,
-          });
+    this.userMessageService.sendMessageStream(text, (event: CognitionEvent) => {
+      this.zone.run(() => this.handleEvent(event));
+    }).then(() => {
+      this.zone.run(() => {
+        // Stream ended without a 'done' event — finalize if we have an answer
+        if (this.isSpeaking && this.answerText && !this.loading) return;
+        if (this.answerText && this.loading) {
+          this.finishStream();
         }
-        this.loading = false;
-        this.scrollToBottom();
-      },
-      error: (err) => {
+      });
+    }).catch((err) => {
+      this.zone.run(() => {
         this.messages.push({
           role: 'assistant',
-          content: err?.error?.message || err?.message || 'Failed to reach the backend.',
+          content: err?.message || 'Failed to reach the backend.',
           timestamp: new Date().toISOString(),
           error: true,
         });
         this.loading = false;
+        this.isThinking = false;
+        this.isSpeaking = false;
         this.scrollToBottom();
-      },
+      });
     });
+  }
+
+  private handleEvent(event: CognitionEvent) {
+    switch (event.type) {
+      case 'thinking_title':
+        this.isThinking = true;
+        this.thinkingTitle = event.title ?? '';
+        this.scrollToBottom();
+        break;
+
+      case 'thinking_token':
+        this.isThinking = true;
+        this.thinkingText += event.token ?? '';
+        this.scrollToBottom();
+        break;
+
+      case 'thinking_done':
+        this.isThinking = false;
+        break;
+
+      case 'answer_token':
+        this.isSpeaking = true;
+        this.answerText += event.token ?? '';
+        this.scrollToBottom();
+        break;
+
+      case 'done':
+        this.messages.push({
+          role: 'assistant',
+          content: event.answer ?? this.answerText,
+          thinking: event.thinking ?? this.thinkingText,
+          timestamp: new Date().toISOString(),
+          sources: event.sources,
+          ingestion: event.ingestion as IngestionStats | undefined,
+          cogIterations: event.cogIterations,
+          thinkingExpanded: false,
+        });
+        this.loading = false;
+        this.isThinking = false;
+        this.isSpeaking = false;
+        this.thinkingTitle = '';
+        this.thinkingText = '';
+        this.answerText = '';
+        this.scrollToBottom();
+        break;
+
+      case 'error':
+        this.messages.push({
+          role: 'assistant',
+          content: event.message ?? 'An error occurred.',
+          timestamp: new Date().toISOString(),
+          error: true,
+        });
+        this.loading = false;
+        this.isThinking = false;
+        this.isSpeaking = false;
+        this.scrollToBottom();
+        break;
+    }
+  }
+
+  private finishStream() {
+    this.messages.push({
+      role: 'assistant',
+      content: this.answerText,
+      thinking: this.thinkingText,
+      timestamp: new Date().toISOString(),
+      thinkingExpanded: false,
+    });
+    this.loading = false;
+    this.isThinking = false;
+    this.isSpeaking = false;
+    this.thinkingTitle = '';
+    this.thinkingText = '';
+    this.answerText = '';
+    this.scrollToBottom();
   }
 
   endConversation() {
@@ -116,11 +200,15 @@ export class UserMessageComponent {
     this.expandedIndex = this.expandedIndex === index ? null : index;
   }
 
+  toggleThinking(index: number) {
+    this.messages[index].thinkingExpanded = !this.messages[index].thinkingExpanded;
+  }
+
   hasDetails(msg: ChatMessage): boolean {
     return (
       msg.role === 'assistant' &&
       !msg.error &&
-      (!!msg.sources || !!msg.ingestion || msg.iterations !== undefined)
+      (!!msg.sources || !!msg.ingestion || msg.cogIterations !== undefined)
     );
   }
 

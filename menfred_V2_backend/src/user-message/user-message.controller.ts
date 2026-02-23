@@ -1,4 +1,5 @@
-import { Body, Controller, Logger, Post } from '@nestjs/common';
+import { Body, Controller, Logger, Post, Res } from '@nestjs/common';
+import { Response } from 'express';
 import { UnifiedMemoryService } from '../unified-memory/unified-memory.service';
 import { ConversationService } from '../conversation/conversation.service';
 
@@ -10,6 +11,30 @@ export class UserMessageController {
     private readonly unifiedMemory: UnifiedMemoryService,
     private readonly conversation: ConversationService,
   ) {}
+
+  @Post('stream')
+  async streamMessage(@Body() body: { message?: string }, @Res() res: Response) {
+    const message = body?.message ?? JSON.stringify(body);
+    this.logger.log(`Stream message: ${message}`);
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    try {
+      for await (const event of this.unifiedMemory.processMessageStream(message)) {
+        res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+      }
+    } catch (error) {
+      this.logger.error(`Stream processing failed: ${(error as Error).message}`);
+      res.write(
+        `event: error\ndata: ${JSON.stringify({ type: 'error', message: (error as Error).message })}\n\n`,
+      );
+    }
+    res.end();
+  }
 
   @Post()
   async receiveMessage(@Body() body: { message?: string }) {

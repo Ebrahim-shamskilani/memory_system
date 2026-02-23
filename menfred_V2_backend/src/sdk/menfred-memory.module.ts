@@ -3,6 +3,7 @@ import { MENFRED_MEMORY_CONFIG, MenfredMemoryConfig } from './menfred-memory.con
 
 // Infrastructure services
 import { GraphDbService } from '../graph-db/graph-db.service';
+import { GraphDbSchemaService } from '../graph-db/graph-db-schema.service';
 import { ChromadbService } from '../chromadb/chromadb.service';
 import { LlmService } from '../llm/llm.service';
 import { ConversationService } from '../conversation/conversation.service';
@@ -44,6 +45,7 @@ export class MenfredMemoryModule {
     const services = [
       // Infrastructure
       GraphDbService,
+      GraphDbSchemaService,
       ChromadbService,
       LlmService,
       ConversationService,
