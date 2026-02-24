@@ -159,6 +159,19 @@ export class ChromadbService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  async getByFilter(
+    collectionName: string,
+    where: any,
+    limit?: number,
+  ) {
+    const col = await this.getCollection(collectionName);
+    return col.get({
+      where,
+      ...(limit ? { limit } : {}),
+      include: ['documents', 'metadatas'],
+    });
+  }
+
   async deleteDocument(collectionName: string, id: string): Promise<void> {
     const col = await this.getCollection(collectionName);
     await col.delete({ ids: [id] });

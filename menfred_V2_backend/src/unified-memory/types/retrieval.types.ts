@@ -6,6 +6,11 @@ export type IntentType =
   | 'recall_conversation'
   | 'store_information';
 
+export interface TimeConstraints {
+  after?: string;   // ISO 8601 string — only results after this date
+  before?: string;  // ISO 8601 string — only results before this date
+}
+
 export interface ResolvedEntity {
   name: string;
   chromaId?: string;
@@ -16,6 +21,7 @@ export interface EntityResolutionResult {
   entities: ResolvedEntity[];
   intents: IntentType[];
   resolvedQuery: string;
+  timeConstraints?: TimeConstraints;
 }
 
 export interface VectorSearchResult {
@@ -54,6 +60,7 @@ export interface RetrievalContext {
   query: string;
   resolvedEntities: ResolvedEntity[];
   intents: IntentType[];
+  timeConstraints?: TimeConstraints;
   vectorResults: VectorSearchResult[];
   graphResults: TraversalResult;
   facts: string[];

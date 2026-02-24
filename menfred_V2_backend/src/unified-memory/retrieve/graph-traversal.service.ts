@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { GraphDbService } from '../../graph-db/graph-db.service';
 import { ChromadbService, COLLECTION_RELATIONSHIPS } from '../../chromadb/chromadb.service';
 import { EmbeddingService } from './embedding.service';
-import { TraversalResult, GraphNode, GraphRelationship } from '../types/retrieval.types';
+import { TraversalResult, GraphNode, GraphRelationship, TimeConstraints } from '../types/retrieval.types';
 
 const TOP_K_RELATIONSHIPS = 5;
 const MAX_HOPS = 2;
@@ -27,6 +27,7 @@ export class GraphTraversalService {
     seedChromaIds: string[],
     queryText: string,
     maxHops = MAX_HOPS,
+    timeConstraints?: TimeConstraints,
   ): Promise<TraversalResult> {
     const visitedNodes = new Set<string>();
     const allNodes: GraphNode[] = [];
@@ -58,15 +59,21 @@ export class GraphTraversalService {
           });
         }
 
-        // Get all relationships from this seed
+        // Get all relationships from this seed (with optional time filtering)
         const relResult = await this.graphDb.runQuery(
           `MATCH (source {chromaId: $chromaId})-[r]-(target)
            WHERE r.chromaId IS NOT NULL
+             AND ($after IS NULL OR r.createdAt >= datetime($after))
+             AND ($before IS NULL OR r.createdAt <= datetime($before))
            RETURN r.chromaId AS relChromaId, type(r) AS relType,
                   properties(r) AS relProps,
                   source.chromaId AS sourceChromaId,
                   target.chromaId AS targetChromaId`,
-          { chromaId: seedId },
+          {
+            chromaId: seedId,
+            after: timeConstraints?.after ?? null,
+            before: timeConstraints?.before ?? null,
+          },
         );
 
         const relationships = relResult.records as any[];
@@ -129,12 +136,17 @@ export class GraphTraversalService {
   /**
    * Get facts with full metadata and supersession info
    */
-  async getEntityFactsRich(entityChromaId: string): Promise<
+  async getEntityFactsRich(
+    entityChromaId: string,
+    timeConstraints?: TimeConstraints,
+  ): Promise<
     { content: string; confidence: number; source: string; createdAt: string; isSuperseded: boolean }[]
   > {
     const result = await this.graphDb.runQuery(
       `MATCH (e:Entity {chromaId: $chromaId})-[:HAS_FACT]->(f:Fact)
        WHERE f.invalidatedAt IS NULL
+         AND ($after IS NULL OR f.createdAt >= datetime($after))
+         AND ($before IS NULL OR f.createdAt <= datetime($before))
        OPTIONAL MATCH (newer:Fact)-[:SUPERSEDES]->(f)
        RETURN f.content AS content,
               f.confidence AS confidence,
@@ -142,7 +154,11 @@ export class GraphTraversalService {
               toString(f.createdAt) AS createdAt,
               CASE WHEN newer IS NOT NULL THEN true ELSE false END AS isSuperseded
        ORDER BY f.createdAt ASC`,
-      { chromaId: entityChromaId },
+      {
+        chromaId: entityChromaId,
+        after: timeConstraints?.after ?? null,
+        before: timeConstraints?.before ?? null,
+      },
     );
 
     return (result.records as any[]).map((r) => ({

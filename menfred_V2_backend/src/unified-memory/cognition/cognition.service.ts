@@ -233,8 +233,9 @@ I need to THINK deeply about this. I ask myself:
 - What specific facts from my memory are relevant here?
 - Is ${this.userName} asking a question, telling me something new, or making a request?
 - Are there related people, places, or things I should look up?
-- Should I look up my memroy based on Date or Time?
-- Should I look up my memroy  to understand context based on recent episodes?
+- I must ask myself defrent aspects of what ${this.userName} is asking me.
+- Should I look up my memory for a specific time period? I can search with time references like "last week" or "yesterday"
+- Should I look up my memory to understand context based on recent episodes?
 - What are the implications or connections I can draw from what I know?
 - Is there anything ${this.userName} might expect me to know that I haven't found yet?
 
@@ -323,7 +324,11 @@ My response to ${this.userName} (in Persian):
 
     for (const vr of context.vectorResults) {
       if (vr.document && vr.distance < 0.5) {
-        facts.add(vr.document);
+        // Include timestamp so the LLM can identify temporal context
+        // (e.g., which facts are from "yesterday" vs "today")
+        const ts = vr.metadata?.timestamp ?? vr.metadata?.created_at;
+        const prefix = ts ? `[${ts}] ` : '';
+        facts.add(`${prefix}${vr.document}`);
       }
     }
 

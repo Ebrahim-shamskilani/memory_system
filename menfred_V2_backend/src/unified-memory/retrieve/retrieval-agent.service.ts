@@ -7,6 +7,7 @@ import { SufficiencyEvaluatorService } from './sufficiency-evaluator.service';
 import {
   EntityResolutionResult,
   RetrievalContext,
+  TimeConstraints,
   VectorSearchResult,
   TraversalResult,
 } from '../types/retrieval.types';
@@ -39,8 +40,10 @@ export class RetrievalAgentService {
 
     // Step 2: Entity resolution + intent classification (skip if pre-computed)
     const resolution = precomputedResolution ?? await this.entityResolver.resolve(message, conversationContext);
+    let timeConstraints: TimeConstraints | undefined = resolution.timeConstraints;
     this.logger.log(
-      `Resolved entities: ${resolution.entities.map((e) => e.name).join(', ')} | Intents: ${resolution.intents.join(', ')}`,
+      `Resolved entities: ${resolution.entities.map((e) => e.name).join(', ')} | Intents: ${resolution.intents.join(', ')}` +
+      (timeConstraints ? ` | Time: ${timeConstraints.after ?? '*'}..${timeConstraints.before ?? '*'}` : ''),
     );
 
     // Initialize retrieval context
@@ -48,6 +51,7 @@ export class RetrievalAgentService {
       query: resolution.resolvedQuery,
       resolvedEntities: resolution.entities,
       intents: resolution.intents,
+      timeConstraints,
       vectorResults: [],
       graphResults: { nodes: [], relationships: [] },
       facts: [],
@@ -55,12 +59,19 @@ export class RetrievalAgentService {
     };
 
     // For recall_conversation intent: inject conversation buffer as facts
+    // When time constraints exist, only inject turns within the time window
     if (resolution.intents.includes('recall_conversation') && conversationContext) {
       const turns = this.conversationService.getRecentTurns();
+      let injected = 0;
       for (const turn of turns) {
+        if (timeConstraints) {
+          if (timeConstraints.after && turn.timestamp < timeConstraints.after) continue;
+          if (timeConstraints.before && turn.timestamp > timeConstraints.before) continue;
+        }
         context.facts.push(`[${turn.timestamp}] [conversation turn] ${turn.role}: ${turn.content}`);
+        injected++;
       }
-      this.logger.log(`Injected ${turns.length} conversation turns as facts for recall_conversation`);
+      this.logger.log(`Injected ${injected}/${turns.length} conversation turns as facts for recall_conversation`);
     }
 
     // Iterative retrieval loop
@@ -73,6 +84,8 @@ export class RetrievalAgentService {
       const vectorResults = await this.vectorLookup.search(
         currentQuery,
         resolution.intents,
+        undefined,
+        timeConstraints,
       );
       context.vectorResults.push(...vectorResults);
 
@@ -82,12 +95,14 @@ export class RetrievalAgentService {
         const traversalResult = await this.graphTraversal.traverse(
           seedIds,
           currentQuery,
+          undefined,
+          timeConstraints,
         );
         this.mergeTraversalResults(context.graphResults, traversalResult);
 
         // Collect rich facts from seed entities
         for (const seedId of seedIds) {
-          const richFacts = await this.graphTraversal.getEntityFactsRich(seedId);
+          const richFacts = await this.graphTraversal.getEntityFactsRich(seedId, timeConstraints);
           for (const rf of richFacts) {
             const prefix = rf.isSuperseded ? '[SUPERSEDED] ' : '';
             const meta = `[${rf.createdAt}] [confidence: ${rf.confidence}] [source: ${rf.source}]`;
@@ -109,7 +124,20 @@ export class RetrievalAgentService {
         `Iteration ${iteration + 1}: ${allFacts.length} facts, sufficient: ${sufficiency.hasEnough} (confidence: ${sufficiency.confidence})`,
       );
 
-      if (sufficiency.hasEnough || !sufficiency.nextSearch) {
+      if (sufficiency.hasEnough) {
+        break;
+      }
+
+      // Fallback: drop time constraints and retry with the original query
+      // when the first time-filtered iteration returned insufficient results
+      if (timeConstraints && iteration === 0) {
+        this.logger.log('Time-filtered search insufficient, retrying without time constraints');
+        timeConstraints = undefined;
+        currentQuery = sufficiency.nextSearch ?? resolution.resolvedQuery;
+        continue;
+      }
+
+      if (!sufficiency.nextSearch) {
         break;
       }
 
@@ -187,10 +215,13 @@ export class RetrievalAgentService {
       if (desc) facts.add(String(desc));
     }
 
-    // Vector document text
+    // Vector document text — annotate with timestamp so the LLM
+    // can distinguish "yesterday's" facts from "today's"
     for (const vr of context.vectorResults) {
       if (vr.document && vr.distance < 0.5) {
-        facts.add(vr.document);
+        const ts = vr.metadata?.timestamp ?? vr.metadata?.created_at;
+        const prefix = ts ? `[${ts}] ` : '';
+        facts.add(`${prefix}${vr.document}`);
       }
     }
 
