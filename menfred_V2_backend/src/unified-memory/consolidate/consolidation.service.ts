@@ -9,26 +9,7 @@ import { MENFRED_MEMORY_CONFIG, MenfredMemoryConfig } from '../../sdk/menfred-me
 
 const CONSOLIDATION_MESSAGE_THRESHOLD = 10;
 
-const SUMMARIZATION_PROMPT = `You are a memory consolidation engine. Given a sequence of conversation turns (Level 3 raw messages), segment them by TOPIC and summarize each topic.
-
-A multi-topic conversation (e.g., work + family + hobbies) should produce separate summaries per topic.
-
-Rules:
-- Each turn can belong to only one topic segment
-- Summaries should capture the key information, not just repeat messages
-- Write summaries in the same language as the original messages
-- Include key facts, entities, and events mentioned
-
-Respond ONLY with valid JSON:
-{
-  "segments": [
-    {
-      "topic": "short topic label",
-      "turn_indexes": [0, 1, 3],
-      "summary": "concise summary of this topic segment"
-    }
-  ]
-}`;
+// SUMMARIZATION_PROMPT is now built dynamically via buildSummarizationPrompt() to interpolate config values
 
 const PATTERN_DETECTION_PROMPT = `You are a memory pattern detection engine. Given a set of Level 2 episode summaries, identify recurring patterns, habits, or themes across them.
 
@@ -94,6 +75,7 @@ export class ConsolidationService {
   private readonly logger = new Logger(ConsolidationService.name);
   private messageCounter = 0;
   private readonly userName: string;
+  private readonly brainName: string;
 
   constructor(
     private readonly llm: LlmService,
@@ -103,6 +85,7 @@ export class ConsolidationService {
     @Inject(MENFRED_MEMORY_CONFIG) @Optional() config?: MenfredMemoryConfig,
   ) {
     this.userName = config?.user?.name ?? 'ابراهیم';
+    this.brainName = config?.brain?.name ?? 'Manfred';
   }
 
   private buildDeduplicationPrompt(): string {
@@ -123,6 +106,33 @@ Respond ONLY with valid JSON:
       "canonical_content": "the best version of this fact",
       "duplicate_indexes": [0, 3, 5],
       "confidence": 0.95
+    }
+  ]
+}`;
+  }
+
+  private buildSummarizationPrompt(): string {
+    return `You are a memory consolidation engine. Given a sequence of conversation turns (Level 3 dialogue between ${this.userName} and ${this.brainName}), segment them by TOPIC and summarize each topic.
+
+Turns prefixed with [self] are ${this.brainName}'s own responses. All other turns are ${this.userName}'s messages.
+
+A multi-topic conversation (e.g., work + family + hobbies) should produce separate summaries per topic.
+
+Rules:
+- Each turn can belong to only one topic segment
+- Summaries must clearly attribute who said what: use "${this.userName} said/asked..." and "${this.brainName} responded/explained..."
+- CRITICAL: Never mix up attribution. If a turn starts with [self], it was said by ${this.brainName}, not ${this.userName}
+- Write summaries in the same language as the original messages
+- Include key facts, entities, and events mentioned
+- Capture both the question AND the answer, not just one side
+
+Respond ONLY with valid JSON:
+{
+  "segments": [
+    {
+      "topic": "short topic label",
+      "turn_indexes": [0, 1, 3],
+      "summary": "concise summary of this topic segment"
     }
   ]
 }`;
@@ -207,6 +217,9 @@ Respond ONLY with valid JSON:
     }
 
     for (const [conversationId, episodes] of byConversation) {
+      // Sort by timestamp to maintain dialogue order
+      episodes.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+
       stats.level3Processed += episodes.length;
 
       // Build turn list for LLM
@@ -214,7 +227,7 @@ Respond ONLY with valid JSON:
         .map((ep, i) => `[${i}] ${ep.description}`)
         .join('\n');
 
-      const prompt = `${SUMMARIZATION_PROMPT}
+      const prompt = `${this.buildSummarizationPrompt()}
 
 Conversation turns:
 ${turnsText}

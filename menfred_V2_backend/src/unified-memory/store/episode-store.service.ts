@@ -27,6 +27,8 @@ export class EpisodeStoreService {
     const now = new Date().toISOString();
     const timestamp = dto.timestamp ?? now;
 
+    const role = dto.role ?? 'user';
+
     // Write Neo4j first
     try {
       await this.graphDb.runQuery(
@@ -37,6 +39,7 @@ export class EpisodeStoreService {
           timestamp: datetime($timestamp),
           level: $level,
           source: $source,
+          role: $role,
           conversationId: $conversationId,
           createdAt: datetime($createdAt),
           updatedAt: datetime($updatedAt)
@@ -48,6 +51,7 @@ export class EpisodeStoreService {
           timestamp,
           level: dto.level,
           source: dto.source,
+          role,
           conversationId: dto.conversationId,
           createdAt: now,
           updatedAt: now,
@@ -66,6 +70,7 @@ export class EpisodeStoreService {
         timestamp,
         conversation_id: dto.conversationId,
         source: dto.source,
+        role,
         created_at: now,
       });
       return { neo4jSuccess: true, chromaSuccess: true, chromaId };

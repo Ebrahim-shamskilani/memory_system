@@ -157,6 +157,7 @@ Respond ONLY with valid JSON:
       description: message,
       level: 3,
       source: 'conversation',
+      role: 'user',
       conversationId,
     });
     result.episodeCreated = episodeResult.neo4jSuccess && episodeResult.chromaSuccess;
@@ -351,6 +352,39 @@ Respond ONLY with valid JSON:
     );
 
     return result;
+  }
+
+  async storeSelfResponse(response: string): Promise<{ episodeCreated: boolean }> {
+    const conversationId = this.conversation.getActiveConversationId();
+
+    // Prefix baked into the document text — travels everywhere, impossible to strip
+    const prefixedText = `[self] ${response}`;
+
+    const episodeResult = await this.store.createEpisode({
+      title: `${this.brainName} response`,
+      description: prefixedText,
+      level: 3,
+      source: 'conversation',
+      role: 'self',
+      conversationId,
+    });
+
+    const created = episodeResult.neo4jSuccess && episodeResult.chromaSuccess;
+
+    // Maintain FOLLOWED_BY chain (self turn follows user turn)
+    if (created) {
+      const previousEpisodeId = this.lastEpisodeMap.get(conversationId);
+      if (previousEpisodeId) {
+        try {
+          await this.store.linkEpisodeTemporally(previousEpisodeId, episodeResult.chromaId);
+        } catch (e) {
+          this.logger.warn(`Failed to create FOLLOWED_BY link for self response: ${(e as Error).message}`);
+        }
+      }
+      this.lastEpisodeMap.set(conversationId, episodeResult.chromaId);
+    }
+
+    return { episodeCreated: created };
   }
 
   private async extract(message: string): Promise<ExtractionResult | null> {

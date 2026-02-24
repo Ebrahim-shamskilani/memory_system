@@ -19,6 +19,7 @@ export interface CreateEpisodeDto {
   timestamp?: string;
   level: number;
   source: EpisodeSource;
+  role?: 'user' | 'self';
   conversationId: string;
 }
 

@@ -178,6 +178,14 @@ export class CognitionService {
 
     // 5. FINALIZE
     this.conversation.addTurn('assistant', answerText);
+
+    // Store self response as a Level 3 episode (for conversation recall)
+    try {
+      await this.ingestor.storeSelfResponse(answerText);
+    } catch (err) {
+      this.logger.error(`Failed to store self response: ${(err as Error).message}`);
+    }
+
     this.consolidation.incrementMessageCounter();
 
     if (this.consolidation.shouldConsolidate()) {
