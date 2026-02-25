@@ -2,9 +2,11 @@ import { Injectable, Logger } from '@nestjs/common';
 import { EntityStoreService } from './entity-store.service';
 import { RelationshipStoreService } from './relationship-store.service';
 import { EpisodeStoreService } from './episode-store.service';
+import { BeliefStoreService } from './belief-store.service';
 import { CreateEntityDto } from '../types/entity.types';
 import { CreateRelationshipDto } from '../types/entity.types';
 import { CreateEpisodeDto, CreateFactDto } from '../types/episode.types';
+import { CreateBeliefDto } from '../types/belief.types';
 import { DualWriteResult } from '../types/memory.types';
 
 @Injectable()
@@ -15,6 +17,7 @@ export class UnifiedStoreService {
     private readonly entityStore: EntityStoreService,
     private readonly relationshipStore: RelationshipStoreService,
     private readonly episodeStore: EpisodeStoreService,
+    private readonly beliefStore: BeliefStoreService,
   ) {}
 
   async createEntity(dto: CreateEntityDto): Promise<DualWriteResult> {
@@ -112,5 +115,28 @@ export class UnifiedStoreService {
 
   getEpisodeStore(): EpisodeStoreService {
     return this.episodeStore;
+  }
+
+  // ── Belief delegations ──
+
+  async createBelief(dto: CreateBeliefDto): Promise<DualWriteResult> {
+    this.logger.log(`Creating belief: ${dto.content.substring(0, 50)}...`);
+    return this.beliefStore.createBelief(dto);
+  }
+
+  async linkEntityToBelief(
+    entityChromaId: string,
+    beliefChromaId: string,
+    description: string,
+  ): Promise<void> {
+    return this.beliefStore.linkEntityToBelief(entityChromaId, beliefChromaId, description);
+  }
+
+  async linkBeliefSupersedes(newBeliefChromaId: string, oldBeliefChromaIds: string[]): Promise<void> {
+    return this.beliefStore.linkBeliefSupersedes(newBeliefChromaId, oldBeliefChromaIds);
+  }
+
+  getBeliefStore(): BeliefStoreService {
+    return this.beliefStore;
   }
 }

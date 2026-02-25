@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ChromadbService, COLLECTION_ENTITIES, COLLECTION_RELATIONSHIPS, COLLECTION_EPISODES } from '../../chromadb/chromadb.service';
+import { ChromadbService, COLLECTION_ENTITIES, COLLECTION_RELATIONSHIPS, COLLECTION_EPISODES, COLLECTION_BELIEFS } from '../../chromadb/chromadb.service';
 import { IntentType, TimeConstraints, VectorSearchResult } from '../types/retrieval.types';
 
 const DEFAULT_N_RESULTS = 5;
@@ -115,6 +115,10 @@ export class VectorLookupService {
     return this.searchCollection(COLLECTION_EPISODES, query, nResults, where);
   }
 
+  async searchBeliefs(query: string, nResults = DEFAULT_N_RESULTS): Promise<VectorSearchResult[]> {
+    return this.searchCollection(COLLECTION_BELIEFS, query, nResults);
+  }
+
   private async searchCollection(
     collectionName: string,
     query: string,
@@ -154,16 +158,20 @@ export class VectorLookupService {
         case 'find_entity':
           collections.add(COLLECTION_ENTITIES);
           collections.add(COLLECTION_RELATIONSHIPS);
+          collections.add(COLLECTION_BELIEFS);
           break;
         case 'find_relationship':
           collections.add(COLLECTION_ENTITIES);
           collections.add(COLLECTION_RELATIONSHIPS);
+          collections.add(COLLECTION_BELIEFS);
           break;
         case 'find_event':
           collections.add(COLLECTION_EPISODES);
+          collections.add(COLLECTION_BELIEFS);
           break;
         case 'find_pattern':
           collections.add(COLLECTION_EPISODES);
+          collections.add(COLLECTION_BELIEFS);
           break;
         case 'recall_conversation':
           collections.add(COLLECTION_EPISODES);

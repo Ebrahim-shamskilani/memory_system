@@ -170,6 +170,43 @@ export class GraphTraversalService {
     }));
   }
 
+  /**
+   * Get beliefs associated with an entity, with supersession info
+   */
+  async getEntityBeliefsRich(
+    entityChromaId: string,
+    timeConstraints?: TimeConstraints,
+  ): Promise<
+    { content: string; confidence: number; source: string; createdAt: string; isSuperseded: boolean }[]
+  > {
+    const result = await this.graphDb.runQuery(
+      `MATCH (e:Entity {chromaId: $chromaId})-[:HAS_BELIEF]->(b:Belief)
+       WHERE b.invalidatedAt IS NULL
+         AND ($after IS NULL OR b.createdAt >= datetime($after))
+         AND ($before IS NULL OR b.createdAt <= datetime($before))
+       OPTIONAL MATCH (newer:Belief)-[:SUPERSEDES]->(b)
+       RETURN b.content AS content,
+              b.confidence AS confidence,
+              b.source AS source,
+              toString(b.createdAt) AS createdAt,
+              CASE WHEN newer IS NOT NULL THEN true ELSE false END AS isSuperseded
+       ORDER BY b.createdAt ASC`,
+      {
+        chromaId: entityChromaId,
+        after: timeConstraints?.after ?? null,
+        before: timeConstraints?.before ?? null,
+      },
+    );
+
+    return (result.records as any[]).map((r) => ({
+      content: r.content,
+      confidence: r.confidence,
+      source: r.source,
+      createdAt: r.createdAt,
+      isSuperseded: r.isSuperseded,
+    }));
+  }
+
   private async scoreRelationships(
     relChromaIds: string[],
     queryEmbedding: number[],

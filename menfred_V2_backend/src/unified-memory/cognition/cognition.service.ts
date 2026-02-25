@@ -339,6 +339,8 @@ RULES:
 - Address ${this.userName} directly as "you" (تو/شما)
 - I will not calculate, compute ages, or do arithmetic — just state raw facts
 - For Persian/Farsi names, I will use original script
+- Facts marked [belief] are my own previous conclusions — they have LOWER priority than stated facts
+- Facts marked [former belief] are things I used to believe but no longer do
 
 My response to ${this.userName} (in Persian):
 `;
@@ -367,7 +369,9 @@ My response to ${this.userName} (in Persian):
         // (e.g., which facts are from "yesterday" vs "today")
         const ts = vr.metadata?.timestamp ?? vr.metadata?.created_at;
         const prefix = ts ? `[${ts}] ` : '';
-        facts.add(`${prefix}${vr.document}`);
+        const isBelief = vr.metadata?.neo4j_label === 'Belief';
+        const beliefTag = isBelief ? '[belief] ' : '';
+        facts.add(`${beliefTag}${prefix}${vr.document}`);
       }
     }
 
@@ -379,12 +383,15 @@ My response to ${this.userName} (in Persian):
     const relationships: string[] = [];
     const episodes: string[] = [];
     const facts: string[] = [];
+    const beliefs: string[] = [];
 
     for (const node of context.graphResults.nodes) {
       if (node.labels.includes('Entity')) {
         entities.push(node.chromaId);
       } else if (node.labels.includes('Episode')) {
         episodes.push(node.chromaId);
+      } else if (node.labels.includes('Belief')) {
+        beliefs.push(node.chromaId);
       } else if (node.labels.includes('Fact')) {
         facts.push(node.chromaId);
       }
@@ -394,7 +401,7 @@ My response to ${this.userName} (in Persian):
       relationships.push(rel.chromaId);
     }
 
-    return { entities, relationships, episodes, facts };
+    return { entities, relationships, episodes, facts, beliefs };
   }
 
   private mergeRetrievalContext(target: RetrievalContext, source: RetrievalContext): void {

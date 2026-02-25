@@ -11,6 +11,7 @@ const CHROMA_HOST = 'localhost';
 export const COLLECTION_ENTITIES = 'entities';
 export const COLLECTION_RELATIONSHIPS = 'relationships';
 export const COLLECTION_EPISODES = 'episodes';
+export const COLLECTION_BELIEFS = 'beliefs';
 
 @Injectable()
 export class ChromadbService implements OnModuleInit, OnModuleDestroy {

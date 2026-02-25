@@ -12,6 +12,7 @@ import {
   COLLECTION_ENTITIES,
   COLLECTION_RELATIONSHIPS,
   COLLECTION_EPISODES,
+  COLLECTION_BELIEFS,
 } from '../chromadb/chromadb.service';
 import { MemoryRecallResult, EraseResult } from './types/memory.types';
 import { CognitionEvent } from './types/cognition.types';
@@ -197,7 +198,7 @@ export class UnifiedMemoryService {
     }
 
     // 2. Clear all ChromaDB collections
-    const collections = [COLLECTION_ENTITIES, COLLECTION_RELATIONSHIPS, COLLECTION_EPISODES];
+    const collections = [COLLECTION_ENTITIES, COLLECTION_RELATIONSHIPS, COLLECTION_EPISODES, COLLECTION_BELIEFS];
     for (const collectionName of collections) {
       try {
         const col = await this.chromaDb.getCollection(collectionName);

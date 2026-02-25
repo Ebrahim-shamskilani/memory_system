@@ -29,6 +29,7 @@ export interface MemoryRecallResult {
     relationships: string[];
     episodes: string[];
     facts: string[];
+    beliefs: string[];
   };
   iterations: number;
 }

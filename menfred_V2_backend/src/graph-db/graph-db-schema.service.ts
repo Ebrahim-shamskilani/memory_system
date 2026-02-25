@@ -16,6 +16,7 @@ export class GraphDbSchemaService implements OnModuleInit {
       'CREATE CONSTRAINT entity_chroma_id IF NOT EXISTS FOR (e:Entity) REQUIRE e.chromaId IS UNIQUE',
       'CREATE CONSTRAINT episode_chroma_id IF NOT EXISTS FOR (ep:Episode) REQUIRE ep.chromaId IS UNIQUE',
       'CREATE CONSTRAINT fact_chroma_id IF NOT EXISTS FOR (f:Fact) REQUIRE f.chromaId IS UNIQUE',
+      'CREATE CONSTRAINT belief_chroma_id IF NOT EXISTS FOR (b:Belief) REQUIRE b.chromaId IS UNIQUE',
     ];
 
     const indexes = [
@@ -27,6 +28,8 @@ export class GraphDbSchemaService implements OnModuleInit {
       'CREATE INDEX fact_source IF NOT EXISTS FOR (f:Fact) ON (f.source)',
       'CREATE INDEX fact_confidence IF NOT EXISTS FOR (f:Fact) ON (f.confidence)',
       'CREATE INDEX episode_source IF NOT EXISTS FOR (ep:Episode) ON (ep.source)',
+      'CREATE INDEX belief_source IF NOT EXISTS FOR (b:Belief) ON (b.source)',
+      'CREATE INDEX belief_confidence IF NOT EXISTS FOR (b:Belief) ON (b.confidence)',
     ];
 
     for (const cypher of [...constraints, ...indexes]) {

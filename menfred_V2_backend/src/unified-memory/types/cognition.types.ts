@@ -12,7 +12,7 @@ export interface CognitionEvent {
   token?: string;
   answer?: string;
   thinking?: string;
-  sources?: { entities: string[]; relationships: string[]; episodes: string[]; facts: string[] };
+  sources?: { entities: string[]; relationships: string[]; episodes: string[]; facts: string[]; beliefs: string[] };
   ingestion?: Record<string, unknown>;
   cogIterations?: number;
   message?: string;

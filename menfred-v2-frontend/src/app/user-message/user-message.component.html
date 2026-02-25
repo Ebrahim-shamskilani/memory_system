@@ -73,6 +73,7 @@
                     <span>Relationships: {{ msg.sources.relationships.length }}</span>
                     <span>Episodes: {{ msg.sources.episodes.length }}</span>
                     <span>Facts: {{ msg.sources.facts.length }}</span>
+                    <span>Beliefs: {{ msg.sources.beliefs?.length ?? 0 }}</span>
                   </div>
                 }
                 @if (msg.ingestion) {

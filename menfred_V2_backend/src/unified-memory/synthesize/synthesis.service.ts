@@ -41,7 +41,13 @@ STRICT RULES:
 Handling contradictions:
 - Prefer facts marked with source "consolidated" (most authoritative)
 - Prefer later timestamps over earlier ones when two facts conflict
-- Ignore [SUPERSEDED] facts unless the user asks about history`;
+- Ignore [SUPERSEDED] facts unless the user asks about history
+
+Handling beliefs:
+- Facts marked [belief] are Manfred's own conclusions — lower confidence than stated facts
+- Present beliefs as opinions ("I think...", "It seems...") not as definitive facts
+- When a belief contradicts a stated fact, prefer the stated fact
+- Facts marked [former belief] are beliefs Manfred no longer holds — mention only if the user asks about past beliefs`;
   }
 
   async synthesize(
@@ -53,7 +59,7 @@ Handling contradictions:
     if (facts.length === 0) {
       return {
         answer: 'I don\'t have any stored memories related to your question.',
-        sources: { entities: [], relationships: [], episodes: [], facts: [] },
+        sources: { entities: [], relationships: [], episodes: [], facts: [], beliefs: [] },
         iterations: context.iterations,
       };
     }
@@ -111,7 +117,9 @@ Answer:`;
 
     for (const vr of context.vectorResults) {
       if (vr.document && vr.distance < 0.5) {
-        facts.add(vr.document);
+        const isBelief = vr.metadata?.neo4j_label === 'Belief';
+        const beliefTag = isBelief ? '[belief] ' : '';
+        facts.add(`${beliefTag}${vr.document}`);
       }
     }
 
@@ -123,12 +131,15 @@ Answer:`;
     const relationships: string[] = [];
     const episodes: string[] = [];
     const facts: string[] = [];
+    const beliefs: string[] = [];
 
     for (const node of context.graphResults.nodes) {
       if (node.labels.includes('Entity')) {
         entities.push(node.chromaId);
       } else if (node.labels.includes('Episode')) {
         episodes.push(node.chromaId);
+      } else if (node.labels.includes('Belief')) {
+        beliefs.push(node.chromaId);
       } else if (node.labels.includes('Fact')) {
         facts.push(node.chromaId);
       }
@@ -138,6 +149,6 @@ Answer:`;
       relationships.push(rel.chromaId);
     }
 
-    return { entities, relationships, episodes, facts };
+    return { entities, relationships, episodes, facts, beliefs };
   }
 }

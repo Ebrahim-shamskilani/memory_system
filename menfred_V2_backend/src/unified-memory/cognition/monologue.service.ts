@@ -6,6 +6,7 @@ import { ConversationService } from '../../conversation/conversation.service';
 import { RetrievalAgentService } from '../retrieve/retrieval-agent.service';
 import { VectorLookupService } from '../retrieve/vector-lookup.service';
 import { GraphTraversalService } from '../retrieve/graph-traversal.service';
+import { BeliefIngestorService } from '../ingest/belief-ingestor.service';
 import { MonologueBufferService } from './monologue-buffer.service';
 import { MonologueEntry, MonologueEvent } from '../types/monologue.types';
 import { RetrievalContext } from '../types/retrieval.types';
@@ -41,6 +42,7 @@ export class MonologueService {
     private readonly retrievalAgent: RetrievalAgentService,
     private readonly vectorLookup: VectorLookupService,
     private readonly graphTraversal: GraphTraversalService,
+    private readonly beliefIngestor: BeliefIngestorService,
     private readonly monologueBuffer: MonologueBufferService,
     @Inject(MENFRED_MEMORY_CONFIG) @Optional() config?: MenfredMemoryConfig,
   ) {
@@ -251,6 +253,18 @@ export class MonologueService {
 
     // Step 5: Extract next seed
     const nextSeed = await this.extractNextSeed(seed, voicedOutput, signal);
+
+    // Step 5.5: Extract and store beliefs from monologue
+    this.checkAborted(signal);
+    try {
+      const beliefResult = await this.beliefIngestor.ingest(voicedOutput, monologueId, seed);
+      if (beliefResult.beliefsCreated > 0) {
+        this.logger.log(`Monologue produced ${beliefResult.beliefsCreated} beliefs`);
+      }
+    } catch (err) {
+      if (err instanceof AbortedError) throw err;
+      this.logger.error(`Belief ingestion failed: ${(err as Error).message}`);
+    }
 
     // Step 6: Buffer & emit
     const allThinkingText = previousThoughts
@@ -485,6 +499,8 @@ RULES:
 - I must NOT address ${this.userName} directly (no "you" / "تو")
 - I should refer to ${this.userName} in third person
 - I must NOT calculate or do arithmetic
+- Facts marked [belief] are my own previous conclusions — they have LOWER priority than stated facts
+- Facts marked [former belief] are things I used to believe but no longer do
 
 My inner thought (in Persian):
 `;
@@ -513,7 +529,9 @@ My inner thought (in Persian):
       if (vr.document && vr.distance < 0.5) {
         const ts = vr.metadata?.timestamp ?? vr.metadata?.created_at;
         const prefix = ts ? `[${ts}] ` : '';
-        facts.add(`${prefix}${vr.document}`);
+        const isBelief = vr.metadata?.neo4j_label === 'Belief';
+        const beliefTag = isBelief ? '[belief] ' : '';
+        facts.add(`${beliefTag}${prefix}${vr.document}`);
       }
     }
 

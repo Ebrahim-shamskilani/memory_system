@@ -108,6 +108,14 @@ export class RetrievalAgentService {
             const meta = `[${rf.createdAt}] [confidence: ${rf.confidence}] [source: ${rf.source}]`;
             context.facts.push(`${prefix}${meta} ${rf.content}`);
           }
+
+          // Collect beliefs linked to this entity
+          const richBeliefs = await this.graphTraversal.getEntityBeliefsRich(seedId, timeConstraints);
+          for (const rb of richBeliefs) {
+            const beliefPrefix = rb.isSuperseded ? '[former belief] ' : '[belief] ';
+            const meta = `[${rb.createdAt}] [confidence: ${rb.confidence}] [source: ${rb.source}]`;
+            context.facts.push(`${beliefPrefix}${meta} ${rb.content}`);
+          }
         }
       }
 
@@ -221,7 +229,9 @@ export class RetrievalAgentService {
       if (vr.document && vr.distance < 0.5) {
         const ts = vr.metadata?.timestamp ?? vr.metadata?.created_at;
         const prefix = ts ? `[${ts}] ` : '';
-        facts.add(`${prefix}${vr.document}`);
+        const isBelief = vr.metadata?.neo4j_label === 'Belief';
+        const beliefTag = isBelief ? '[belief] ' : '';
+        facts.add(`${beliefTag}${prefix}${vr.document}`);
       }
     }
 

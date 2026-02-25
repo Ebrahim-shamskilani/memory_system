@@ -16,6 +16,7 @@ export interface MemorySources {
   relationships: string[];
   episodes: string[];
   facts: string[];
+  beliefs: string[];
 }
 
 export interface SendMessageResponse {

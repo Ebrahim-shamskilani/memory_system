@@ -305,7 +305,8 @@ export class UserMessageComponent implements OnInit, OnDestroy {
       sources.entities.length +
       sources.relationships.length +
       sources.episodes.length +
-      sources.facts.length
+      sources.facts.length +
+      (sources.beliefs?.length ?? 0)
     );
   }
 
