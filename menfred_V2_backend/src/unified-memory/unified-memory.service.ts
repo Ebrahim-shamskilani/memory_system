@@ -16,6 +16,7 @@ import {
 import { MemoryRecallResult, EraseResult } from './types/memory.types';
 import { CognitionEvent } from './types/cognition.types';
 import { CognitionService } from './cognition/cognition.service';
+import { MonologueService } from './cognition/monologue.service';
 import { ConsolidationRun } from './types/consolidation.types';
 import { CreateEntityDto, CreateRelationshipDto } from './types/entity.types';
 import { CreateEpisodeDto, CreateFactDto } from './types/episode.types';
@@ -36,6 +37,7 @@ export class UnifiedMemoryService {
     private readonly graphDb: GraphDbService,
     private readonly chromaDb: ChromadbService,
     private readonly cognition: CognitionService,
+    private readonly monologue: MonologueService,
   ) {}
 
   /**
@@ -43,6 +45,15 @@ export class UnifiedMemoryService {
    * Pre-classifies intent: only ingests if 'store_information' is detected.
    */
   async processMessage(message: string): Promise<MemoryRecallResult & { ingestion: IngestionResult }> {
+    this.monologue.pause();
+    try {
+      return await this._processMessage(message);
+    } finally {
+      this.monologue.resume();
+    }
+  }
+
+  private async _processMessage(message: string): Promise<MemoryRecallResult & { ingestion: IngestionResult }> {
     this.logger.log(`Processing message: "${message.substring(0, 80)}..."`);
 
     // Add user turn to conversation buffer
@@ -107,9 +118,15 @@ export class UnifiedMemoryService {
 
   /**
    * Streaming cognition pipeline: think → ingest → speak.
+   * Pauses monologue during reactive processing.
    */
   async *processMessageStream(message: string): AsyncGenerator<CognitionEvent> {
-    yield* this.cognition.process(message);
+    this.monologue.pause();
+    try {
+      yield* this.cognition.process(message);
+    } finally {
+      this.monologue.resume();
+    }
   }
 
   /**

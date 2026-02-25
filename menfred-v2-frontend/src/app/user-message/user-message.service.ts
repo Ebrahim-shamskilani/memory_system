@@ -41,6 +41,27 @@ export interface CognitionEvent {
   message?: string;
 }
 
+export type MonologueEventType =
+  | 'monologue_thinking_title'
+  | 'monologue_thinking_token'
+  | 'monologue_thinking_done'
+  | 'monologue_voice_token'
+  | 'monologue_done'
+  | 'monologue_error';
+
+export interface MonologueEvent {
+  type: MonologueEventType;
+  title?: string;
+  token?: string;
+  voicedOutput?: string;
+  thinking?: string;
+  seed?: string;
+  nextSeed?: string;
+  monologueId?: string;
+  timestamp?: string;
+  message?: string;
+}
+
 export interface EndConversationResponse {
   success: boolean;
   newConversationId?: string;
@@ -99,6 +120,32 @@ export class UserMessageService {
         }
       }
     }
+  }
+
+  connectMonologueStream(onEvent: (event: MonologueEvent) => void): EventSource {
+    const es = new EventSource('/api/monologue/stream');
+
+    const eventTypes: MonologueEventType[] = [
+      'monologue_thinking_title',
+      'monologue_thinking_token',
+      'monologue_thinking_done',
+      'monologue_voice_token',
+      'monologue_done',
+      'monologue_error',
+    ];
+
+    for (const eventType of eventTypes) {
+      es.addEventListener(eventType, (e: MessageEvent) => {
+        try {
+          const parsed = JSON.parse(e.data) as MonologueEvent;
+          onEvent(parsed);
+        } catch {
+          // skip malformed JSON
+        }
+      });
+    }
+
+    return es;
   }
 
   endConversation() {

@@ -24,11 +24,13 @@
         [class.user]="msg.role === 'user'"
         [class.assistant]="msg.role === 'assistant'"
         [class.system]="msg.role === 'system'"
+        [class.monologue]="msg.role === 'monologue'"
         [class.error]="msg.error"
       >
         <div class="message-label">
           @if (msg.role === 'user') { You }
           @else if (msg.role === 'assistant') { Menfred }
+          @else if (msg.role === 'monologue') { Menfred's inner thought }
           @else { System }
         </div>
         <div class="message-bubble">
@@ -90,6 +92,45 @@
           }
         </div>
         <div class="message-time">{{ msg.timestamp | date:'shortTime' }}</div>
+      </div>
+    }
+
+    <!-- Live monologue streaming -->
+    @if (isMonologueThinking || isMonologueVoicing) {
+      <div class="message monologue">
+        <div class="message-label">Menfred's inner thought</div>
+        <div class="message-bubble streaming-bubble">
+          <!-- Monologue thinking phase -->
+          @if (isMonologueThinking || monologueThinkingText) {
+            <div class="thinking-section live">
+              @if (monologueThinkingTitle) {
+                <div class="thinking-title">
+                  @if (isMonologueThinking) {
+                    <span class="pulse-dot monologue-pulse"></span>
+                  }
+                  <span>{{ monologueThinkingTitle }}</span>
+                </div>
+              }
+              @if (monologueThinkingText) {
+                <p class="thinking-text">{{ monologueThinkingText }}<span class="blink-cursor" [class.hidden]="!isMonologueThinking">|</span></p>
+              }
+            </div>
+          }
+
+          <!-- Monologue voice phase -->
+          @if (isMonologueVoicing && monologueVoiceText) {
+            <p class="message-text">{{ monologueVoiceText }}<span class="blink-cursor">|</span></p>
+          }
+
+          <!-- Initial monologue loading -->
+          @if (isMonologueThinking && !monologueThinkingText && !monologueThinkingTitle) {
+            <div class="typing">
+              <span class="dot monologue-dot"></span>
+              <span class="dot monologue-dot"></span>
+              <span class="dot monologue-dot"></span>
+            </div>
+          }
+        </div>
       </div>
     }
 

@@ -311,6 +311,46 @@
   border-radius: 6px;
 }
 
+/* ── Monologue messages ── */
+.message.monologue {
+  align-self: flex-start;
+  align-items: flex-start;
+  opacity: 0.85;
+}
+
+.message.monologue .message-label {
+  color: #00897b;
+  font-style: italic;
+}
+
+.message.monologue .message-bubble {
+  background: #e0f2f1;
+  color: #004d40;
+  border: 1px dashed #80cbc4;
+  border-bottom-left-radius: 4px;
+  font-style: italic;
+}
+
+.message.monologue .thinking-section.live {
+  border-bottom-color: #80cbc4;
+}
+
+.message.monologue .thinking-title {
+  color: #00897b;
+}
+
+.monologue-pulse {
+  background: #00897b !important;
+}
+
+.monologue-dot {
+  background: #80cbc4 !important;
+}
+
+.message.monologue .thinking-content {
+  background: #b2dfdb;
+}
+
 /* ── Input bar ── */
 .chat-input {
   display: flex;

@@ -1,15 +1,16 @@
-import { Component, ElementRef, NgZone, ViewChild } from '@angular/core';
+import { Component, ElementRef, NgZone, OnDestroy, OnInit, ViewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { CommonModule } from '@angular/common';
 import {
   UserMessageService,
   CognitionEvent,
+  MonologueEvent,
   IngestionStats,
   MemorySources,
 } from './user-message.service';
 
 interface ChatMessage {
-  role: 'user' | 'assistant' | 'system';
+  role: 'user' | 'assistant' | 'system' | 'monologue';
   content: string;
   timestamp: string;
   thinking?: string;
@@ -19,6 +20,7 @@ interface ChatMessage {
   cogIterations?: number;
   error?: boolean;
   thinkingExpanded?: boolean;
+  seed?: string;
 }
 
 @Component({
@@ -27,18 +29,27 @@ interface ChatMessage {
   templateUrl: './user-message.component.html',
   styleUrl: './user-message.component.css',
 })
-export class UserMessageComponent {
+export class UserMessageComponent implements OnInit, OnDestroy {
   message = '';
   messages: ChatMessage[] = [];
   loading = false;
   expandedIndex: number | null = null;
 
-  // Streaming state
+  // Streaming state (reactive)
   thinkingTitle = '';
   thinkingText = '';
   answerText = '';
   isThinking = false;
   isSpeaking = false;
+
+  // Monologue streaming state
+  private monologueSource: EventSource | null = null;
+  monologueThinkingTitle = '';
+  monologueThinkingText = '';
+  monologueVoiceText = '';
+  isMonologueThinking = false;
+  isMonologueVoicing = false;
+  monologueSeed = '';
 
   @ViewChild('chatBody') private chatBody!: ElementRef;
 
@@ -46,6 +57,83 @@ export class UserMessageComponent {
     private userMessageService: UserMessageService,
     private zone: NgZone,
   ) {}
+
+  ngOnInit(): void {
+    this.connectMonologue();
+  }
+
+  ngOnDestroy(): void {
+    this.disconnectMonologue();
+  }
+
+  private connectMonologue(): void {
+    this.monologueSource = this.userMessageService.connectMonologueStream(
+      (event: MonologueEvent) => {
+        this.zone.run(() => this.handleMonologueEvent(event));
+      },
+    );
+  }
+
+  private disconnectMonologue(): void {
+    if (this.monologueSource) {
+      this.monologueSource.close();
+      this.monologueSource = null;
+    }
+  }
+
+  private handleMonologueEvent(event: MonologueEvent): void {
+    switch (event.type) {
+      case 'monologue_thinking_title':
+        this.isMonologueThinking = true;
+        this.monologueThinkingTitle = event.title ?? '';
+        this.monologueSeed = event.seed ?? this.monologueSeed;
+        this.scrollToBottom();
+        break;
+
+      case 'monologue_thinking_token':
+        this.isMonologueThinking = true;
+        this.monologueThinkingText += event.token ?? '';
+        this.scrollToBottom();
+        break;
+
+      case 'monologue_thinking_done':
+        this.isMonologueThinking = false;
+        break;
+
+      case 'monologue_voice_token':
+        this.isMonologueVoicing = true;
+        this.monologueVoiceText += event.token ?? '';
+        this.scrollToBottom();
+        break;
+
+      case 'monologue_done':
+        this.messages.push({
+          role: 'monologue',
+          content: event.voicedOutput ?? this.monologueVoiceText,
+          thinking: event.thinking ?? this.monologueThinkingText,
+          timestamp: event.timestamp ?? new Date().toISOString(),
+          seed: event.seed,
+          thinkingExpanded: false,
+        });
+        this.isMonologueThinking = false;
+        this.isMonologueVoicing = false;
+        this.monologueThinkingTitle = '';
+        this.monologueThinkingText = '';
+        this.monologueVoiceText = '';
+        this.monologueSeed = '';
+        this.scrollToBottom();
+        break;
+
+      case 'monologue_error':
+        this.isMonologueThinking = false;
+        this.isMonologueVoicing = false;
+        this.monologueThinkingTitle = '';
+        this.monologueThinkingText = '';
+        this.monologueVoiceText = '';
+        this.monologueSeed = '';
+        break;
+    }
+  }
 
   sendMessage() {
     const text = this.message.trim();

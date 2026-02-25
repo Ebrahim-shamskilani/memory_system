@@ -6,6 +6,7 @@ import { VectorLookupService } from '../retrieve/vector-lookup.service';
 import { GraphTraversalService } from '../retrieve/graph-traversal.service';
 import { MessageIngestorService, IngestionResult } from '../ingest/message-ingestor.service';
 import { ConsolidationService } from '../consolidate/consolidation.service';
+import { MonologueBufferService } from './monologue-buffer.service';
 import { CognitionEvent } from '../types/cognition.types';
 import { RetrievalContext } from '../types/retrieval.types';
 import { MENFRED_MEMORY_CONFIG, MenfredMemoryConfig } from '../../sdk/menfred-memory.config';
@@ -27,6 +28,7 @@ export class CognitionService {
     private readonly graphTraversal: GraphTraversalService,
     private readonly ingestor: MessageIngestorService,
     private readonly consolidation: ConsolidationService,
+    private readonly monologueBuffer: MonologueBufferService,
     @Inject(MENFRED_MEMORY_CONFIG) @Optional() config?: MenfredMemoryConfig,
   ) {
     this.brainName = config?.brain?.name ?? 'Manfred';
@@ -225,6 +227,11 @@ export class CognitionService {
       : '';
 
     if (iteration === 0) {
+      const recentMonologues = this.monologueBuffer.getRecent(2);
+      const monologueHint = recentMonologues.length > 0
+        ? `\n(Side note: I was just thinking to myself about "${recentMonologues[recentMonologues.length - 1].seed}" — this may or may not be relevant to what ${this.userName} is saying.)\n`
+        : '';
+
       // First iteration: deep reasoning about the message + retrieved facts
       return `I am ${this.brainName}, ${this.userName}'s (${this.userNameEnglish}) personal companion. I am friendly. today is ${new Date()} and I live in ${this.userName}'s Laptop.
 
@@ -236,21 +243,31 @@ ${factsText}
 Recent conversation:
 ${conversationContext}
 
-I need to THINK deeply about this. I ask myself:
-- Who exactly is ${this.userName} referring to? What do I know about them?
-- What specific facts from my memory are relevant here?
-- Is ${this.userName} asking a question, telling me something new, or making a request?
-- Are there related people, places, or things I should look up?
-- I must ask myself defrent aspects of what ${this.userName} is asking me.
-- Should I look up my memory for a specific time period? I can search with time references like "last week" or "yesterday"
-- Should I look up my memory to understand context based on recent episodes?
-- What are the implications or connections I can draw from what I know?
-- Is there anything ${this.userName} might expect me to know that I haven't found yet?
+My PRIMARY focus is on what ${this.userName} just said. I must respond to THEIR message directly.
+${monologueHint}
+FIRST, I must decide: does ${this.userName}'s message actually need my memory?
+- If ${this.userName} is asking a riddle, puzzle, general knowledge question, or just chatting — I should THINK and REASON using my own intelligence, NOT search my memory. Memory facts about ${this.userName}'s life are IRRELEVANT to riddles and general questions.
+- If ${this.userName} is asking about their life, people they know, past events, or something personal — THEN my memory is useful.
+
+I need to THINK deeply about what ${this.userName} said. I ask myself:
+- What is ${this.userName} actually asking or saying? Is this about their personal life or is it a general question/riddle/conversation?
+- Can I answer this using my own reasoning and intelligence, WITHOUT needing memory?
+- If memory IS relevant: what specific facts help? Are there related people, places, or things I should look up?
+- What are the implications or connections I can draw?
+- Is there anything missing that I should search for?
 
 After my reasoning, I MUST end with exactly ONE action:
 - <READY> — I understand the situation and can respond (even if I don't know the answer)
 - <STORE> — ${this.userName} is sharing new information I should save to memory
-- <SEARCH>specific query</SEARCH> — I need to look up something specific in my memory
+- <SEARCH>natural language question</SEARCH> — I need to look up something specific in my memory
+
+CRITICAL rules for <SEARCH>:
+- Write the search as a NATURAL LANGUAGE QUESTION or a statement that is semantically related to the topic, like asking my memory. Example: <SEARCH>آرزو کجا کار میکنه؟</SEARCH> or <SEARCH>من چند ساله هستم</SEARCH>
+- I can rephrase the question or statement or try different aspects of the topic in memory search to get more information.
+- NEVER use keyword-style queries like "Ebrahim work history 2025" — these return nothing!
+- Use the SAME LANGUAGE as the memories and ${this.userName} (usually Persian/Farsi)
+- Include time references naturally: <SEARCH>دیروز چه اتفاقی افتاد؟</SEARCH> or <SEARCH>هفته پیش درباره چی صحبت کردیم؟</SEARCH>
+- Think of it as asking a question to someone who knows everything — not typing into a search engine
 
 Rules: Questions are never stored. <STORE> means the user told me something new. Use the same language as ${this.userName}.
 
@@ -259,13 +276,24 @@ My reasoning:
     }
 
     // Subsequent iterations: reason about newly found facts
+    const pastSearches = previousThoughts
+      .filter((t) => t.startsWith('[Searched'))
+      .map((t) => {
+        const match = t.match(/\[Searched "(.+?)"/);
+        return match ? match[1] : null;
+      })
+      .filter(Boolean);
+    const pastSearchSection = pastSearches.length > 0
+      ? `\nSearches I already tried (DO NOT repeat these):\n${pastSearches.map((s) => `- "${s}"`).join('\n')}\n`
+      : '';
+
     return `I am ${this.brainName}, ${this.userName}'s memory companion.
 
 ${this.userName} said: "${message}"
 
 Everything I now know from my memory:
 ${factsText}
-${prevSection}
+${prevSection}${pastSearchSection}
 I have new information. Let me think about what this means:
 - How do these new facts connect to what ${this.userName} said?
 - Do I now have a complete picture, or is something still missing?
@@ -273,7 +301,7 @@ I have new information. Let me think about what this means:
 
 After reasoning, end with ONE action:
 - <READY> — I have enough to respond
-- <SEARCH>specific query</SEARCH> — I still need to look up something specific
+- <SEARCH>natural language question</SEARCH> — I still need to look up something specific (must be a NEW query I haven't tried before, in the same language as ${this.userName}, NOT keywords)
 
 My reasoning:
 `;
@@ -299,6 +327,9 @@ All facts from my memory:
 ${factsText}
 
 RULES:
+- I will respond directly to what ${this.userName} said — their message is my priority
+- If ${this.userName} asked a riddle, puzzle, or general question — I answer it using my reasoning, NOT by citing memory facts
+- I only use memory facts when they are ACTUALLY relevant to what ${this.userName} is asking
 - I will help ${this.userName} by answering questions and providing information
 - I can ask questions to the user to get more information if needed or the topic is intersting for you
 - I will not repeat user questions or statements
