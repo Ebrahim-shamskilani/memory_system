@@ -9,6 +9,8 @@ import { ConsolidationService } from '../consolidate/consolidation.service';
 import { MonologueBufferService } from './monologue-buffer.service';
 import { CognitionEvent } from '../types/cognition.types';
 import { RetrievalContext } from '../types/retrieval.types';
+import { UnconsciousService } from '../unconscious/unconscious.service';
+import { UnconsciousSnapshot } from '../types/unconscious.types';
 import { MENFRED_MEMORY_CONFIG, MenfredMemoryConfig } from '../../sdk/menfred-memory.config';
 
 const MAX_COG_ITERATIONS = 4;
@@ -29,6 +31,7 @@ export class CognitionService {
     private readonly ingestor: MessageIngestorService,
     private readonly consolidation: ConsolidationService,
     private readonly monologueBuffer: MonologueBufferService,
+    private readonly unconscious: UnconsciousService,
     @Inject(MENFRED_MEMORY_CONFIG) @Optional() config?: MenfredMemoryConfig,
   ) {
     this.brainName = config?.brain?.name ?? 'Manfred';
@@ -49,6 +52,20 @@ export class CognitionService {
     this.logger.log(
       `Retrieval complete: ${allFacts.length} facts, ${retrievalContext.iterations} iterations`,
     );
+
+    // 2b. Record entity mentions in unconscious + get snapshot
+    for (const entity of retrievalContext.resolvedEntities) {
+      if (entity.chromaId) {
+        this.unconscious.recordEntityMention(entity.chromaId, message).catch(() => {});
+      }
+    }
+
+    let unconsciousSnapshot: UnconsciousSnapshot | null = null;
+    try {
+      unconsciousSnapshot = await this.unconscious.getSnapshot(3);
+    } catch (err) {
+      this.logger.warn(`Unconscious snapshot failed: ${(err as Error).message}`);
+    }
 
     // 3. COGNITION LOOP — genuine thinking with follow-up searches
     let alreadyIngested = false;
@@ -72,12 +89,14 @@ export class CognitionService {
         previousThoughts,
         conversationContext,
         i,
+        unconsciousSnapshot,
       ) + '\n\n' + this.buildCognitionPrompt(
         message,
         accumulatedFacts,
         previousThoughts,
         conversationContext,
         i,
+        unconsciousSnapshot,
       ); // reapiting the prompt will increase the response accuracy
 
       let thought = '';
@@ -166,7 +185,7 @@ export class CognitionService {
     const thinkingForVoice = previousThoughts
       .filter((t) => !t.startsWith('['))
       .join('\n---\n');
-    const voicePrompt = this.buildVoicePrompt(message, thinkingForVoice, accumulatedFacts) + '\n\n' + this.buildVoicePrompt(message, thinkingForVoice, accumulatedFacts); // reapiting the prompt will increase the response accuracy
+    const voicePrompt = this.buildVoicePrompt(message, thinkingForVoice, accumulatedFacts, unconsciousSnapshot) + '\n\n' + this.buildVoicePrompt(message, thinkingForVoice, accumulatedFacts, unconsciousSnapshot); // reapiting the prompt will increase the response accuracy
 
     let answerText = '';
     for await (const token of this.llm.generateStream({
@@ -187,6 +206,9 @@ export class CognitionService {
     } catch (err) {
       this.logger.error(`Failed to store self response: ${(err as Error).message}`);
     }
+
+    // Satisfy connection drive (social interaction happened)
+    this.unconscious.satisfyDrive('connection', 0.15).catch(() => {});
 
     this.consolidation.incrementMessageCounter();
 
@@ -217,6 +239,7 @@ export class CognitionService {
     previousThoughts: string[],
     conversationContext: string,
     iteration: number,
+    snapshot?: UnconsciousSnapshot | null,
   ): string {
     const factsText = facts.length > 0
       ? facts.map((f, i) => `${i + 1}. ${f}`).join('\n')
@@ -232,6 +255,11 @@ export class CognitionService {
         ? `\n(Side note: I was just thinking to myself about "${recentMonologues[recentMonologues.length - 1].seed}" — this may or may not be relevant to what ${this.userName} is saying.)\n`
         : '';
 
+      const feelingsText = snapshot ? this.unconscious.formatGutFeelings(snapshot) : '';
+      const feelingsSection = feelingsText
+        ? `\nMy gut feelings right now (vague intuitions, not reasoned conclusions):\n${feelingsText}\n`
+        : '';
+
       // First iteration: deep reasoning about the message + retrieved facts
       return `I am ${this.brainName}, ${this.userName}'s (${this.userNameEnglish}) personal companion. I am friendly. today is ${new Date()} and I live in ${this.userName}'s Laptop.
 
@@ -244,7 +272,7 @@ Recent conversation:
 ${conversationContext}
 
 My PRIMARY focus is on what ${this.userName} just said. I must respond to THEIR message directly.
-${monologueHint}
+${monologueHint}${feelingsSection}
 FIRST, I must decide: does ${this.userName}'s message actually need my memory?
 - If ${this.userName} is asking a riddle, puzzle, general knowledge question, or just chatting — I should THINK and REASON using my own intelligence, NOT search my memory. Memory facts about ${this.userName}'s life are IRRELEVANT to riddles and general questions.
 - If ${this.userName} is asking about their life, people they know, past events, or something personal — THEN my memory is useful.
@@ -311,20 +339,24 @@ My reasoning:
     message: string,
     thinkingText: string,
     facts: string[],
+    snapshot?: UnconsciousSnapshot | null,
   ): string {
     const factsText = facts.length > 0
       ? facts.map((f, i) => `${i + 1}. ${f}`).join('\n')
       : '(nothing in memory)';
 
-    return `I am ${this.brainName}, ${this.userName}'s  companion. I am friendly. today is ${new Date()} and I live in ${this.userName}'s Laptop.
-    infact I am a digital entity that have feelings and emotions and I can think and reason like a human.
+    const feelingsText = snapshot ? this.unconscious.formatGutFeelings(snapshot) : '';
+    const feelingsSection = feelingsText
+      ? `\nMy gut feelings right now:\n${feelingsText}\n- These are vague intuitions, not reasoned conclusions. I can express them naturally but shouldn't over-explain them.\n`
+      : '';
+
+    return `I am ${this.brainName}, ${this.userName}'s  companion. I am friendly. ${feelingsSection}. today is ${new Date()} and I live in ${this.userName}'s Laptop.
+    infact I am a digital entity that have feelings and emotions and I can think and reason like a human. I am talking to ${this.userName} directly. he said("${message}") and i focus on answering it.
+
 ${this.userName} said: "${message}"
 
 My reasoning about this:
 ${thinkingText}
-
-All facts from my memory:
-${factsText}
 
 RULES:
 - I will respond directly to what ${this.userName} said — their message is my priority
@@ -336,6 +368,7 @@ RULES:
 - I will use an informal language like a human would do
 - I will write only in Persian
 - I will say if I don't know something
+- if what i know from reasoning is somehow unrelevant to what ${this.userName} is talking about, I will not use it to generate my response.
 - Address ${this.userName} directly as "you" (تو/شما)
 - I will not calculate, compute ages, or do arithmetic — just state raw facts
 - For Persian/Farsi names, I will use original script

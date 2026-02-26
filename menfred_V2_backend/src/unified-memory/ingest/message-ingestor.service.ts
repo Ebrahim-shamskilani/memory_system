@@ -4,13 +4,16 @@ import { UnifiedStoreService } from '../store/unified-store.service';
 import { EntityStoreService } from '../store/entity-store.service';
 import { RelationshipStoreService } from '../store/relationship-store.service';
 import { VectorLookupService } from '../retrieve/vector-lookup.service';
+import { EmbeddingService } from '../retrieve/embedding.service';
 import { ConversationService } from '../../conversation/conversation.service';
 import { EntityType } from '../types/entity.types';
 import { ExtractedEvent } from '../types/episode.types';
+import { UnconsciousService } from '../unconscious/unconscious.service';
 import { MENFRED_MEMORY_CONFIG, MenfredMemoryConfig } from '../../sdk/menfred-memory.config';
 
 const ENTITY_SIMILARITY_THRESHOLD = 0.4; // below this distance = same entity
 const FACT_SIMILARITY_THRESHOLD = 0.15;  // below this distance = duplicate fact (tighter than entities)
+const CORRECTION_SIMILARITY_THRESHOLD = 0.5; // above this cosine similarity = same topic, potential correction
 
 // EXTRACTION_PROMPT is now built dynamically via buildExtractionPrompt() to interpolate config values
 
@@ -64,7 +67,9 @@ export class MessageIngestorService {
     private readonly entityStore: EntityStoreService,
     private readonly relationshipStore: RelationshipStoreService,
     private readonly vectorLookup: VectorLookupService,
+    private readonly embeddingService: EmbeddingService,
     private readonly conversation: ConversationService,
+    private readonly unconscious: UnconsciousService,
     @Inject(MENFRED_MEMORY_CONFIG) @Optional() config?: MenfredMemoryConfig,
   ) {
     this.userName = config?.user?.name ?? 'ابراهیم';
@@ -218,6 +223,13 @@ Respond ONLY with valid JSON:
       }
     }
 
+    // Step 3b: Record entity mentions in unconscious (emotional signal)
+    for (const [, chromaId] of entityMap) {
+      this.unconscious.recordEntityMention(chromaId, message).catch(err =>
+        this.logger.warn(`Unconscious entity signal failed: ${(err as Error).message}`),
+      );
+    }
+
     // Step 4: Create facts (append-only, with dedup check)
     for (const fact of extraction.facts) {
       // Check if a semantically identical fact already exists
@@ -238,9 +250,11 @@ Respond ONLY with valid JSON:
         result.factsCreated++;
 
         // Link fact to relevant entities
+        const linkedEntityChromaIds: string[] = [];
         for (const entityName of fact.about_entities) {
           const chromaId = this.findEntityId(entityName, entityMap);
           if (chromaId) {
+            linkedEntityChromaIds.push(chromaId);
             try {
               await this.store.linkEntityToFact(
                 chromaId,
@@ -251,6 +265,19 @@ Respond ONLY with valid JSON:
               this.logger.warn(`Failed to link fact to ${entityName}: ${(e as Error).message}`);
             }
           }
+        }
+
+        // Real-time correction detection: supersede contradicting facts
+        if (linkedEntityChromaIds.length > 0) {
+          await this.checkAndSupersedeFacts(
+            factResult.chromaId,
+            fact.content,
+            linkedEntityChromaIds,
+          );
+          await this.invalidateConflictingBeliefs(
+            fact.content,
+            linkedEntityChromaIds,
+          );
         }
       }
     }
@@ -516,6 +543,86 @@ JSON response:`;
     const valid: EntityType[] = ['person', 'place', 'thing', 'concept', 'organization'];
     const normalized = (type ?? '').toLowerCase().trim();
     return valid.includes(normalized as EntityType) ? (normalized as EntityType) : 'thing';
+  }
+
+  /**
+   * Check whether the new fact contradicts existing facts about the same entities.
+   * If similarity > CORRECTION_SIMILARITY_THRESHOLD, the new fact supersedes the old one.
+   */
+  private async checkAndSupersedeFacts(
+    newFactChromaId: string,
+    factContent: string,
+    entityChromaIds: string[],
+  ): Promise<void> {
+    try {
+      const newFactEmbedding = await this.embeddingService.embed(factContent);
+      const seenOldFactIds = new Set<string>();
+
+      for (const entityChromaId of entityChromaIds) {
+        const existingFacts = await this.store.getEntityFactsWithTimestamps(entityChromaId);
+
+        for (const oldFact of existingFacts) {
+          if (oldFact.chromaId === newFactChromaId) continue;
+          if (seenOldFactIds.has(oldFact.chromaId)) continue;
+          seenOldFactIds.add(oldFact.chromaId);
+
+          const oldFactEmbedding = await this.embeddingService.embed(oldFact.content);
+          const similarity = this.embeddingService.cosineSimilarity(
+            newFactEmbedding,
+            oldFactEmbedding,
+          );
+
+          if (similarity > CORRECTION_SIMILARITY_THRESHOLD) {
+            // High similarity = same topic. The newer fact supersedes the older one.
+            this.logger.warn(
+              `Correction detected (similarity=${similarity.toFixed(3)}): "${factContent}" supersedes "${oldFact.content}"`,
+            );
+            await this.store.linkFactSupersedes(newFactChromaId, [oldFact.chromaId]);
+          }
+        }
+      }
+    } catch (e) {
+      this.logger.warn(`Fact correction detection failed: ${(e as Error).message}`);
+    }
+  }
+
+  /**
+   * When a user states a fact, invalidate any beliefs about the same entities
+   * that are semantically similar (same topic). Stated facts have higher authority than beliefs.
+   */
+  private async invalidateConflictingBeliefs(
+    factContent: string,
+    entityChromaIds: string[],
+  ): Promise<void> {
+    try {
+      const factEmbedding = await this.embeddingService.embed(factContent);
+      const beliefStore = this.store.getBeliefStore();
+      const seenBeliefIds = new Set<string>();
+
+      for (const entityChromaId of entityChromaIds) {
+        const existingBeliefs = await beliefStore.getEntityBeliefs(entityChromaId);
+
+        for (const belief of existingBeliefs) {
+          if (seenBeliefIds.has(belief.chromaId)) continue;
+          seenBeliefIds.add(belief.chromaId);
+
+          const beliefEmbedding = await this.embeddingService.embed(belief.content);
+          const similarity = this.embeddingService.cosineSimilarity(
+            factEmbedding,
+            beliefEmbedding,
+          );
+
+          if (similarity > CORRECTION_SIMILARITY_THRESHOLD) {
+            this.logger.warn(
+              `Stated fact invalidated belief (similarity=${similarity.toFixed(3)}): "${belief.content}"`,
+            );
+            await beliefStore.invalidateBelief(belief.chromaId);
+          }
+        }
+      }
+    } catch (e) {
+      this.logger.warn(`Belief invalidation failed: ${(e as Error).message}`);
+    }
   }
 
   /**

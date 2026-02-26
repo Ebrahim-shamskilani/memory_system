@@ -19,6 +19,7 @@ import { ConsolidationService } from './consolidate/consolidation.service';
 import { CognitionService } from './cognition/cognition.service';
 import { MonologueBufferService } from './cognition/monologue-buffer.service';
 import { MonologueService } from './cognition/monologue.service';
+import { UnconsciousService } from './unconscious/unconscious.service';
 
 @Module({
   imports: [GraphDbModule],
@@ -36,6 +37,8 @@ import { MonologueService } from './cognition/monologue.service';
     GraphTraversalService,
     SufficiencyEvaluatorService,
     RetrievalAgentService,
+    // Unconscious layer
+    UnconsciousService,
     // Ingestion layer
     MessageIngestorService,
     BeliefIngestorService,

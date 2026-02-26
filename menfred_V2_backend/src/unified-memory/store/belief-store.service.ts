@@ -95,6 +95,27 @@ export class BeliefStoreService {
     }
   }
 
+  async getEntityBeliefs(
+    entityChromaId: string,
+  ): Promise<{ chromaId: string; content: string }[]> {
+    const result = await this.graphDb.runQuery(
+      `MATCH (e:Entity {chromaId: $chromaId})-[:HAS_BELIEF]->(b:Belief)
+       WHERE b.invalidatedAt IS NULL
+       RETURN b.chromaId AS chromaId, b.content AS content
+       ORDER BY b.createdAt ASC`,
+      { chromaId: entityChromaId },
+    );
+    return result.records as any[];
+  }
+
+  async invalidateBelief(beliefChromaId: string): Promise<void> {
+    await this.graphDb.runQuery(
+      `MATCH (b:Belief {chromaId: $chromaId})
+       SET b.invalidatedAt = datetime()`,
+      { chromaId: beliefChromaId },
+    );
+  }
+
   async findByChromaId(chromaId: string): Promise<BeliefNode | null> {
     const result = await this.graphDb.runQuery(
       `MATCH (b:Belief {chromaId: $chromaId}) RETURN b`,

@@ -253,6 +253,7 @@ export class EpisodeStoreService {
       await this.graphDb.runQuery(
         `MATCH (newFact:Fact {chromaId: $newFactChromaId})
          MATCH (oldFact:Fact {chromaId: $oldId})
+         SET oldFact.invalidatedAt = datetime()
          CREATE (newFact)-[:SUPERSEDES]->(oldFact)`,
         { newFactChromaId, oldId },
       );

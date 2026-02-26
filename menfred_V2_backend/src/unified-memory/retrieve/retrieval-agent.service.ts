@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { GraphDbService } from '../../graph-db/graph-db.service';
 import { ConversationService } from '../../conversation/conversation.service';
 import { EntityResolverService } from './entity-resolver.service';
 import { VectorLookupService } from './vector-lookup.service';
@@ -19,6 +20,7 @@ export class RetrievalAgentService {
   private readonly logger = new Logger(RetrievalAgentService.name);
 
   constructor(
+    private readonly graphDb: GraphDbService,
     private readonly conversationService: ConversationService,
     private readonly entityResolver: EntityResolverService,
     private readonly vectorLookup: VectorLookupService,
@@ -81,12 +83,13 @@ export class RetrievalAgentService {
       context.iterations = iteration + 1;
 
       // Step 3: Vector-first lookup
-      const vectorResults = await this.vectorLookup.search(
+      const rawVectorResults = await this.vectorLookup.search(
         currentQuery,
         resolution.intents,
         undefined,
         timeConstraints,
       );
+      const vectorResults = await this.filterSuperseded(rawVectorResults);
       context.vectorResults.push(...vectorResults);
 
       // Step 4: Semantic graph traversal
@@ -154,6 +157,43 @@ export class RetrievalAgentService {
     }
 
     return context;
+  }
+
+  /**
+   * Filter out vector results that have been superseded or invalidated in Neo4j.
+   */
+  private async filterSuperseded(
+    vectorResults: VectorSearchResult[],
+  ): Promise<VectorSearchResult[]> {
+    if (vectorResults.length === 0) return vectorResults;
+
+    const ids = vectorResults.map((r) => r.chromaId);
+
+    try {
+      const result = await this.graphDb.runQuery(
+        `UNWIND $ids AS id
+         OPTIONAL MATCH (n {chromaId: id})
+         WHERE n.invalidatedAt IS NOT NULL OR EXISTS { (newer)-[:SUPERSEDES]->(n) }
+         RETURN id, CASE WHEN n IS NOT NULL THEN true ELSE false END AS isInvalid`,
+        { ids },
+      );
+
+      const invalidIds = new Set<string>();
+      for (const record of result.records as any[]) {
+        if (record.isInvalid) {
+          invalidIds.add(record.id);
+        }
+      }
+
+      if (invalidIds.size > 0) {
+        this.logger.log(`Filtered ${invalidIds.size} superseded/invalidated items from vector results`);
+      }
+
+      return vectorResults.filter((r) => !invalidIds.has(r.chromaId));
+    } catch (e) {
+      this.logger.warn(`Superseded filter failed: ${(e as Error).message}`);
+      return vectorResults; // fallback: return unfiltered
+    }
   }
 
   private extractSeedIds(vectorResults: VectorSearchResult[]): string[] {

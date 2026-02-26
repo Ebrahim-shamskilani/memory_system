@@ -33,6 +33,11 @@ export class EntityStoreService {
           aliases: $aliases,
           entityType: $entityType,
           description: $description,
+          origin: $origin,
+          valence: 0.0,
+          arousal: 0.5,
+          familiarity: 0.0,
+          safety: 0.5,
           createdAt: datetime($createdAt),
           updatedAt: datetime($updatedAt)
         }) RETURN e.chromaId AS chromaId`,
@@ -42,6 +47,7 @@ export class EntityStoreService {
           aliases: dto.aliases ?? [],
           entityType: dto.entityType,
           description: dto.description,
+          origin: dto.origin ?? 'stated',
           createdAt: now,
           updatedAt: now,
         },
@@ -60,6 +66,7 @@ export class EntityStoreService {
         entity_type: dto.entityType,
         canonical_name: dto.canonicalName,
         aliases: aliases.join(', '),
+        origin: dto.origin ?? 'stated',
         created_at: now,
       });
       return { neo4jSuccess: true, chromaSuccess: true, chromaId };
@@ -103,6 +110,19 @@ export class EntityStoreService {
       return { chromaId: (result.records[0] as any).chromaId };
     }
     return null;
+  }
+
+  async updateEmotionalProfile(
+    chromaId: string,
+    profile: { valence: number; arousal: number; familiarity: number; safety: number },
+  ): Promise<void> {
+    await this.graphDb.runQuery(
+      `MATCH (e:Entity {chromaId: $chromaId})
+       SET e.valence = $valence, e.arousal = $arousal,
+           e.familiarity = $familiarity, e.safety = $safety,
+           e.updatedAt = datetime()`,
+      { chromaId, ...profile },
+    );
   }
 
   private buildEntityDocument(

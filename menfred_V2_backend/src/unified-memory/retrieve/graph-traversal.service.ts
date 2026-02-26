@@ -125,6 +125,7 @@ export class GraphTraversalService {
     const result = await this.graphDb.runQuery(
       `MATCH (e:Entity {chromaId: $chromaId})-[:HAS_FACT]->(f:Fact)
        WHERE f.invalidatedAt IS NULL
+         AND NOT EXISTS { (newer)-[:SUPERSEDES]->(f) }
        RETURN f.content AS content, f.confidence AS confidence
        ORDER BY f.confidence DESC`,
       { chromaId: entityChromaId },

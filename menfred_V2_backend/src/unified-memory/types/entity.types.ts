@@ -13,6 +13,10 @@ export interface EntityNode {
   description: string;
   createdAt: string;
   updatedAt: string;
+  valence?: number;
+  arousal?: number;
+  familiarity?: number;
+  safety?: number;
 }
 
 export interface CreateEntityDto {
@@ -20,6 +24,7 @@ export interface CreateEntityDto {
   aliases?: string[];
   entityType: EntityType;
   description: string;
+  origin?: 'stated' | 'inferred';
 }
 
 export interface RelationshipData {

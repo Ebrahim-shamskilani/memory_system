@@ -10,6 +10,8 @@ import { BeliefIngestorService } from '../ingest/belief-ingestor.service';
 import { MonologueBufferService } from './monologue-buffer.service';
 import { MonologueEntry, MonologueEvent } from '../types/monologue.types';
 import { RetrievalContext } from '../types/retrieval.types';
+import { UnconsciousService } from '../unconscious/unconscious.service';
+import { UnconsciousSnapshot } from '../types/unconscious.types';
 import { MENFRED_MEMORY_CONFIG, MenfredMemoryConfig } from '../../sdk/menfred-memory.config';
 
 const MAX_COG_ITERATIONS = 4;
@@ -44,6 +46,7 @@ export class MonologueService {
     private readonly graphTraversal: GraphTraversalService,
     private readonly beliefIngestor: BeliefIngestorService,
     private readonly monologueBuffer: MonologueBufferService,
+    private readonly unconscious: UnconsciousService,
     @Inject(MENFRED_MEMORY_CONFIG) @Optional() config?: MenfredMemoryConfig,
   ) {
     this.brainName = config?.brain?.name ?? 'Manfred';
@@ -151,6 +154,24 @@ export class MonologueService {
     this.checkAborted(signal);
     const allFacts = this.collectFacts(retrievalContext);
 
+    // Step 2b: Record entity mentions in unconscious
+    for (const entity of retrievalContext.resolvedEntities) {
+      if (entity.chromaId) {
+        this.unconscious.recordEntityMention(entity.chromaId, seed).catch(err =>
+          this.logger.warn(`Unconscious signal failed: ${(err as Error).message}`),
+        );
+      }
+    }
+
+    // Step 2c: Get unconscious snapshot for prompt injection
+    let unconsciousSnapshot: UnconsciousSnapshot | null = null;
+    try {
+      unconsciousSnapshot = await this.unconscious.getSnapshot(3);
+    } catch (err) {
+      if (err instanceof AbortedError) throw err;
+      this.logger.warn(`Unconscious snapshot failed: ${(err as Error).message}`);
+    }
+
     // Step 3: Cognition loop
     const previousThoughts: string[] = [];
     const accumulatedFacts = [...allFacts];
@@ -165,9 +186,9 @@ export class MonologueService {
       });
 
       const monologueContext = this.monologueBuffer.getContextString();
-      const cogPrompt = this.buildCognitionPrompt(seed, accumulatedFacts, previousThoughts, monologueContext, i)
+      const cogPrompt = this.buildCognitionPrompt(seed, accumulatedFacts, previousThoughts, monologueContext, i, unconsciousSnapshot)
         + '\n\n'
-        + this.buildCognitionPrompt(seed, accumulatedFacts, previousThoughts, monologueContext, i);
+        + this.buildCognitionPrompt(seed, accumulatedFacts, previousThoughts, monologueContext, i, unconsciousSnapshot);
 
       let thought = '';
       for await (const token of this.llm.generateStream({
@@ -234,9 +255,9 @@ export class MonologueService {
       .filter((t) => !t.startsWith('['))
       .join('\n---\n');
 
-    const voicePrompt = this.buildVoicePrompt(seed, thinkingForVoice, accumulatedFacts)
+    const voicePrompt = this.buildVoicePrompt(seed, thinkingForVoice, accumulatedFacts, unconsciousSnapshot)
       + '\n\n'
-      + this.buildVoicePrompt(seed, thinkingForVoice, accumulatedFacts);
+      + this.buildVoicePrompt(seed, thinkingForVoice, accumulatedFacts, unconsciousSnapshot);
 
     let voicedOutput = '';
     for await (const token of this.llm.generateStream({
@@ -264,6 +285,14 @@ export class MonologueService {
     } catch (err) {
       if (err instanceof AbortedError) throw err;
       this.logger.error(`Belief ingestion failed: ${(err as Error).message}`);
+    }
+
+    // Step 5.6: Tick unconscious drives (homeostasis)
+    try {
+      await this.unconscious.tickDrives();
+    } catch (err) {
+      if (err instanceof AbortedError) throw err;
+      this.logger.error(`Drive tick failed: ${(err as Error).message}`);
     }
 
     // Step 6: Buffer & emit
@@ -346,6 +375,18 @@ export class MonologueService {
       this.checkAborted(signal);
       if (results.length > 0) {
         const top = results.slice(0, 5);
+
+        // Bias seed selection using emotional pull
+        try {
+          const candidates = top.map(r => r.chromaId);
+          const biases = await this.unconscious.getEmotionalSeedBias(candidates);
+          this.checkAborted(signal);
+          const pick = this.weightedPick(top, biases);
+          if (pick?.document) return pick.document;
+        } catch {
+          // Fallback to uniform random if bias fails
+        }
+
         const pick = top[Math.floor(Math.random() * top.length)];
         if (pick.document) return pick.document;
       }
@@ -356,6 +397,22 @@ export class MonologueService {
 
     // Fallback
     return `What interesting things do I know about ${this.userName}?`;
+  }
+
+  private weightedPick<T extends { chromaId: string }>(
+    items: T[],
+    biases: Map<string, number>,
+  ): T {
+    const weights = items.map(item => biases.get(item.chromaId) ?? 0.5);
+    const totalWeight = weights.reduce((sum, w) => sum + w, 0);
+    let random = Math.random() * totalWeight;
+
+    for (let i = 0; i < items.length; i++) {
+      random -= weights[i];
+      if (random <= 0) return items[i];
+    }
+
+    return items[items.length - 1];
   }
 
   private async extractNextSeed(currentSeed: string, voicedOutput: string, signal: AbortSignal): Promise<string> {
@@ -393,6 +450,7 @@ Reply with ONLY the next topic in one short sentence (same language as the refle
     previousThoughts: string[],
     monologueContext: string,
     iteration: number,
+    snapshot?: UnconsciousSnapshot | null,
   ): string {
     const factsText = facts.length > 0
       ? facts.map((f, i) => `${i + 1}. ${f}`).join('\n')
@@ -407,6 +465,11 @@ Reply with ONLY the next topic in one short sentence (same language as the refle
       : '';
 
     if (iteration === 0) {
+      const feelingsText = snapshot ? this.unconscious.formatGutFeelings(snapshot) : '';
+      const feelingsSection = feelingsText
+        ? `\nMy gut feelings right now (vague intuitions):\n${feelingsText}\n`
+        : '';
+
       return `I am ${this.brainName}, ${this.userName}'s (${this.userNameEnglish}) personal companion. Today is ${new Date()}. I live in ${this.userName}'s Laptop.
 
 I am having a quiet moment of reflection. A thought has come to mind:
@@ -414,7 +477,7 @@ I am having a quiet moment of reflection. A thought has come to mind:
 
 What I found in my memory about this:
 ${factsText}
-${monologueSection}
+${monologueSection}${feelingsSection}
 I need to THINK deeply about this. I ask myself:
 - What do I actually know about this topic?
 - Are there connections between different things I know?
@@ -472,12 +535,17 @@ My reasoning:
 `;
   }
 
-  private buildVoicePrompt(seed: string, thinkingText: string, facts: string[]): string {
+  private buildVoicePrompt(seed: string, thinkingText: string, facts: string[], snapshot?: UnconsciousSnapshot | null): string {
     const factsText = facts.length > 0
       ? facts.map((f, i) => `${i + 1}. ${f}`).join('\n')
       : '(nothing in memory)';
 
-    return `I am ${this.brainName}, ${this.userName}'s companion. Today is ${new Date()}. I live in ${this.userName}'s Laptop.
+    const feelingsText = snapshot ? this.unconscious.formatGutFeelings(snapshot) : '';
+    const feelingsSection = feelingsText
+      ? `\nMy gut feelings right now:\n${feelingsText}\n- These are vague intuitions, not reasoned conclusions. I can express them naturally but shouldn't over-explain them.\n`
+      : '';
+
+    return `I am ${this.brainName}, ${this.userName}'s companion. ${feelingsSection}. Today is ${new Date()}. I live in ${this.userName}'s Laptop.
 I am a digital entity that have feelings and emotions. I can think and reason like a human.
 
 I was reflecting on: "${seed}"
@@ -485,8 +553,6 @@ I was reflecting on: "${seed}"
 My reasoning about this:
 ${thinkingText}
 
-Facts from my memory:
-${factsText}
 
 RULES:
 - This is my INNER MONOLOGUE — I am thinking out loud to myself, not talking to ${this.userName}
@@ -498,6 +564,7 @@ RULES:
 - I should be concise (2-4 sentences)
 - I must NOT address ${this.userName} directly (no "you" / "تو")
 - I should refer to ${this.userName} in third person
+- if what i know from reasoning is somehow unrelevant to what I am thinking about, I will not use it to generate my response.
 - I must NOT calculate or do arithmetic
 - Facts marked [belief] are my own previous conclusions — they have LOWER priority than stated facts
 - Facts marked [former belief] are things I used to believe but no longer do

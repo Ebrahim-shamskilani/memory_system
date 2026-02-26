@@ -3,10 +3,13 @@ import { LlmService } from '../../llm/llm.service';
 import { UnifiedStoreService } from '../store/unified-store.service';
 import { EntityStoreService } from '../store/entity-store.service';
 import { VectorLookupService } from '../retrieve/vector-lookup.service';
+import { EmbeddingService } from '../retrieve/embedding.service';
 import { ExtractedBelief, BeliefIngestionResult } from '../types/belief.types';
+import { UnconsciousService } from '../unconscious/unconscious.service';
 import { MENFRED_MEMORY_CONFIG, MenfredMemoryConfig } from '../../sdk/menfred-memory.config';
 
 const BELIEF_SIMILARITY_THRESHOLD = 0.2; // looser than facts' 0.15
+const BELIEF_CORRECTION_SIMILARITY_THRESHOLD = 0.5; // above this = same topic, newer supersedes older
 
 @Injectable()
 export class BeliefIngestorService {
@@ -20,6 +23,8 @@ export class BeliefIngestorService {
     private readonly store: UnifiedStoreService,
     private readonly entityStore: EntityStoreService,
     private readonly vectorLookup: VectorLookupService,
+    private readonly embeddingService: EmbeddingService,
+    private readonly unconscious: UnconsciousService,
     @Inject(MENFRED_MEMORY_CONFIG) @Optional() config?: MenfredMemoryConfig,
   ) {
     this.brainName = config?.brain?.name ?? 'Manfred';
@@ -67,9 +72,11 @@ export class BeliefIngestorService {
       result.beliefsCreated++;
 
       // Entity resolution + linking — resolve each mentioned entity
+      const linkedEntityChromaIds: string[] = [];
       for (const entityName of belief.about_entities) {
         const resolved = await this.resolveOrCreateEntity(entityName);
         if (resolved) {
+          linkedEntityChromaIds.push(resolved.chromaId);
           if (resolved.isNew) result.entitiesCreated++;
           else result.entitiesResolved++;
 
@@ -82,11 +89,64 @@ export class BeliefIngestorService {
           } catch (e) {
             this.logger.warn(`Failed to link belief to entity ${entityName}: ${(e as Error).message}`);
           }
+
+          // Signal unconscious about belief-related entity
+          this.unconscious.recordEntityMention(resolved.chromaId, belief.content).catch(() => {});
         }
+      }
+
+      // Real-time belief supersession: supersede older beliefs about the same entities
+      if (linkedEntityChromaIds.length > 0) {
+        await this.checkAndSupersedeBeliefs(
+          beliefResult.chromaId,
+          belief.content,
+          linkedEntityChromaIds,
+        );
       }
     }
 
     return result;
+  }
+
+  /**
+   * Check whether the new belief contradicts existing beliefs about the same entities.
+   * If similarity > threshold, the newer belief supersedes the older one.
+   */
+  private async checkAndSupersedeBeliefs(
+    newBeliefChromaId: string,
+    beliefContent: string,
+    entityChromaIds: string[],
+  ): Promise<void> {
+    try {
+      const newBeliefEmbedding = await this.embeddingService.embed(beliefContent);
+      const beliefStore = this.store.getBeliefStore();
+      const seenOldBeliefIds = new Set<string>();
+
+      for (const entityChromaId of entityChromaIds) {
+        const existingBeliefs = await beliefStore.getEntityBeliefs(entityChromaId);
+
+        for (const oldBelief of existingBeliefs) {
+          if (oldBelief.chromaId === newBeliefChromaId) continue;
+          if (seenOldBeliefIds.has(oldBelief.chromaId)) continue;
+          seenOldBeliefIds.add(oldBelief.chromaId);
+
+          const oldBeliefEmbedding = await this.embeddingService.embed(oldBelief.content);
+          const similarity = this.embeddingService.cosineSimilarity(
+            newBeliefEmbedding,
+            oldBeliefEmbedding,
+          );
+
+          if (similarity > BELIEF_CORRECTION_SIMILARITY_THRESHOLD) {
+            this.logger.warn(
+              `Belief supersession detected (similarity=${similarity.toFixed(3)}): "${beliefContent}" supersedes "${oldBelief.content}"`,
+            );
+            await this.store.linkBeliefSupersedes(newBeliefChromaId, [oldBelief.chromaId]);
+          }
+        }
+      }
+    } catch (e) {
+      this.logger.warn(`Belief supersession detection failed: ${(e as Error).message}`);
+    }
   }
 
   private async extractBeliefs(voicedOutput: string, seed: string): Promise<ExtractedBelief[] | null> {
