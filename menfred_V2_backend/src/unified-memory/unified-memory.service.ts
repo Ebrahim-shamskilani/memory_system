@@ -1,11 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { UnifiedStoreService } from './store/unified-store.service';
 import { RetrievalAgentService } from './retrieve/retrieval-agent.service';
-import { SynthesisService } from './synthesize/synthesis.service';
+import { FactCollectorService } from './retrieve/fact-collector.service';
 import { MessageIngestorService, IngestionResult } from './ingest/message-ingestor.service';
 import { ConsolidationService } from './consolidate/consolidation.service';
 import { ConversationService } from '../conversation/conversation.service';
-import { EntityResolverService } from './retrieve/entity-resolver.service';
 import { GraphDbService } from '../graph-db/graph-db.service';
 import {
   ChromadbService,
@@ -16,6 +15,7 @@ import {
 } from '../chromadb/chromadb.service';
 import { MemoryRecallResult, EraseResult } from './types/memory.types';
 import { CognitionEvent } from './types/cognition.types';
+import { RetrievalContext } from './types/retrieval.types';
 import { CognitionService } from './cognition/cognition.service';
 import { MonologueService } from './cognition/monologue.service';
 import { ConsolidationRun } from './types/consolidation.types';
@@ -30,11 +30,10 @@ export class UnifiedMemoryService {
   constructor(
     private readonly store: UnifiedStoreService,
     private readonly retrievalAgent: RetrievalAgentService,
-    private readonly synthesis: SynthesisService,
+    private readonly factCollector: FactCollectorService,
     private readonly ingestor: MessageIngestorService,
     private readonly consolidation: ConsolidationService,
     private readonly conversation: ConversationService,
-    private readonly entityResolver: EntityResolverService,
     private readonly graphDb: GraphDbService,
     private readonly chromaDb: ChromadbService,
     private readonly cognition: CognitionService,
@@ -57,21 +56,7 @@ export class UnifiedMemoryService {
   private async _processMessage(message: string): Promise<MemoryRecallResult & { ingestion: IngestionResult }> {
     this.logger.log(`Processing message: "${message.substring(0, 80)}..."`);
 
-    // Add user turn to conversation buffer
-    this.conversation.addTurn('user', message);
-
-    // Step 0: Pre-classify intent to decide whether to ingest
-    const conversationContext = this.conversation.getContextString();
-    const resolution = await this.entityResolver.resolve(message, conversationContext);
-    const shouldIngest = resolution.intents.includes('store_information');
-
-    this.logger.log(
-      `Intent classification: [${resolution.intents.join(', ')}] → ${shouldIngest ? 'INGEST + RECALL' : 'RECALL only'}`,
-    );
-
-    // Steps 1 + 2: Run INGEST and RECALL in parallel.
-    // Ingest creates NEW entries; recall searches EXISTING entries — safe to parallelize.
-    // This avoids the sequential bottleneck (extraction LLM call blocking recall).
+    // Route through the cognition pipeline (which handles retrieval, ingestion via <STORE>, and voice)
     const emptyIngestion: IngestionResult = {
       entitiesCreated: 0,
       entitiesResolved: 0,
@@ -83,38 +68,21 @@ export class UnifiedMemoryService {
       eventsCreated: 0,
     };
 
-    let ingestion: IngestionResult;
-    let context: import('./types/retrieval.types').RetrievalContext;
-
-    if (shouldIngest) {
-      [ingestion, context] = await Promise.all([
-        this.ingestor.ingest(message),
-        this.retrievalAgent.retrieve(message, resolution),
-      ]);
-      this.logger.log(
-        `Ingested: ${ingestion.entitiesCreated} new entities, ${ingestion.factsCreated} facts, ${ingestion.relationshipsCreated} relationships`,
-      );
-    } else {
-      this.logger.log('Skipping ingestion — message is a question/query, not new information');
-      ingestion = emptyIngestion;
-      context = await this.retrievalAgent.retrieve(message, resolution);
+    let finalEvent: CognitionEvent | null = null;
+    for await (const event of this.cognition.process(message)) {
+      if (event.type === 'done') finalEvent = event;
     }
 
-    const result = await this.synthesis.synthesize(message, context);
+    const answer = finalEvent?.answer ?? '';
+    const sources = finalEvent?.sources ?? { entities: [], relationships: [], episodes: [], facts: [], beliefs: [] };
+    const ingestion = (finalEvent?.ingestion as unknown as IngestionResult) ?? emptyIngestion;
+    const iterations = finalEvent?.cogIterations ?? 0;
 
     this.logger.log(
-      `Recall complete: ${result.iterations} iterations, ${result.sources.entities.length} entities, ${result.sources.relationships.length} relationships`,
+      `Processing complete: ${iterations} cog iterations, ${sources.entities.length} entities`,
     );
 
-    // Step 3: Consolidation check (async, non-blocking)
-    this.consolidation.incrementMessageCounter();
-    if (this.consolidation.shouldConsolidate()) {
-      this.consolidation.consolidate('message_count').catch((err) => {
-        this.logger.error(`Background consolidation failed: ${(err as Error).message}`);
-      });
-    }
-
-    return { ...result, ingestion };
+    return { answer, sources, iterations, ingestion };
   }
 
   /**
@@ -131,7 +99,7 @@ export class UnifiedMemoryService {
   }
 
   /**
-   * Recall-only (no ingestion). For queries that don't carry new information.
+   * Recall-only (no ingestion). Returns raw collected facts without LLM synthesis.
    */
   async recall(message: string): Promise<MemoryRecallResult> {
     this.logger.log(`Recalling memories for: "${message.substring(0, 80)}..."`);
@@ -139,13 +107,43 @@ export class UnifiedMemoryService {
     this.conversation.addTurn('user', message);
 
     const context = await this.retrievalAgent.retrieve(message);
-    const result = await this.synthesis.synthesize(message, context);
+    const facts = this.factCollector.collectFacts(context);
 
     this.logger.log(
-      `Recall complete: ${result.iterations} iterations, ${result.sources.entities.length} entities, ${result.sources.relationships.length} relationships`,
+      `Recall complete: ${context.iterations} iterations, ${facts.length} facts`,
     );
 
-    return result;
+    return {
+      answer: facts.length > 0 ? facts.join('\n') : 'No memories found.',
+      sources: this.extractSources(context),
+      iterations: context.iterations,
+    };
+  }
+
+  private extractSources(context: RetrievalContext): MemoryRecallResult['sources'] {
+    const entities: string[] = [];
+    const relationships: string[] = [];
+    const episodes: string[] = [];
+    const facts: string[] = [];
+    const beliefs: string[] = [];
+
+    for (const node of context.graphResults.nodes) {
+      if (node.labels.includes('Entity')) {
+        entities.push(node.chromaId);
+      } else if (node.labels.includes('Episode')) {
+        episodes.push(node.chromaId);
+      } else if (node.labels.includes('Belief')) {
+        beliefs.push(node.chromaId);
+      } else if (node.labels.includes('Fact')) {
+        facts.push(node.chromaId);
+      }
+    }
+
+    for (const rel of context.graphResults.relationships) {
+      relationships.push(rel.chromaId);
+    }
+
+    return { entities, relationships, episodes, facts, beliefs };
   }
 
   /**

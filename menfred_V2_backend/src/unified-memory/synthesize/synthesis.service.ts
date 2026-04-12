@@ -106,6 +106,7 @@ Answer:`;
     }
 
     for (const node of context.graphResults.nodes) {
+      if (node.labels.includes('Entity')) continue;
       const desc = node.properties.description ?? node.properties.content ?? node.properties.canonicalName;
       if (desc) facts.add(String(desc));
     }
@@ -118,6 +119,8 @@ Answer:`;
     for (const vr of context.vectorResults) {
       if (vr.document && vr.distance < 0.5) {
         const isBelief = vr.metadata?.neo4j_label === 'Belief';
+        // Skip low-confidence monologue beliefs
+        if (isBelief && vr.metadata?.source === 'monologue' && (vr.metadata?.confidence as number) < 0.7) continue;
         const beliefTag = isBelief ? '[belief] ' : '';
         facts.add(`${beliefTag}${vr.document}`);
       }

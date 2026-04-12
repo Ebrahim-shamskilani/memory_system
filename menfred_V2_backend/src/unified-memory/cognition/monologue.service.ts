@@ -6,10 +6,10 @@ import { ConversationService } from '../../conversation/conversation.service';
 import { RetrievalAgentService } from '../retrieve/retrieval-agent.service';
 import { VectorLookupService } from '../retrieve/vector-lookup.service';
 import { GraphTraversalService } from '../retrieve/graph-traversal.service';
+import { FactCollectorService } from '../retrieve/fact-collector.service';
 import { BeliefIngestorService } from '../ingest/belief-ingestor.service';
 import { MonologueBufferService } from './monologue-buffer.service';
 import { MonologueEntry, MonologueEvent } from '../types/monologue.types';
-import { RetrievalContext } from '../types/retrieval.types';
 import { UnconsciousService } from '../unconscious/unconscious.service';
 import { UnconsciousSnapshot } from '../types/unconscious.types';
 import { MENFRED_MEMORY_CONFIG, MenfredMemoryConfig } from '../../sdk/menfred-memory.config';
@@ -44,6 +44,7 @@ export class MonologueService {
     private readonly retrievalAgent: RetrievalAgentService,
     private readonly vectorLookup: VectorLookupService,
     private readonly graphTraversal: GraphTraversalService,
+    private readonly factCollector: FactCollectorService,
     private readonly beliefIngestor: BeliefIngestorService,
     private readonly monologueBuffer: MonologueBufferService,
     private readonly unconscious: UnconsciousService,
@@ -81,11 +82,9 @@ export class MonologueService {
   }
 
   resume(): void {
-    this.paused = false;
-    this.logger.log(`Monologue resumed (postReactive: ${this.postReactive})`);
-    if (!this.running) {
-      this.startLoop();
-    }
+    // TODO: inner monologue disabled for now
+    this.logger.log('Monologue disabled — skipping resume');
+    return;
   }
 
   clientConnected(): void {
@@ -152,7 +151,7 @@ export class MonologueService {
     this.emit({ type: 'monologue_thinking_title', title: `Reflecting on: ${seed.substring(0, 50)}...`, monologueId });
     const retrievalContext = await this.retrievalAgent.retrieve(seed);
     this.checkAborted(signal);
-    const allFacts = this.collectFacts(retrievalContext);
+    const allFacts = this.factCollector.collectFacts(retrievalContext);
 
     // Step 2b: Record entity mentions in unconscious
     for (const entity of retrievalContext.resolvedEntities) {
@@ -211,7 +210,7 @@ export class MonologueService {
       const hasReady = thought.includes('<READY>');
       const searchMatches = [...thought.matchAll(/<SEARCH>([\s\S]*?)<\/SEARCH>/g)];
 
-      // Handle <SEARCH> — follow-up retrieval
+      // Handle <SEARCH> — lightweight follow-up retrieval (no entity resolution)
       if (searchMatches.length > 0) {
         for (const match of searchMatches) {
           const searchQuery = match[1].trim();
@@ -221,9 +220,13 @@ export class MonologueService {
           this.emit({ type: 'monologue_thinking_title', title: `Searching: ${searchQuery}...`, monologueId });
 
           try {
-            const followUpContext = await this.retrievalAgent.retrieve(searchQuery);
+            const followUpContext = await this.retrievalAgent.retrieveLight(
+              searchQuery,
+              retrievalContext.intents,
+              retrievalContext.timeConstraints,
+            );
             this.checkAborted(signal);
-            const newFacts = this.collectFacts(followUpContext);
+            const newFacts = this.factCollector.collectFacts(followUpContext);
             let added = 0;
             for (const fact of newFacts) {
               if (!seenFacts.has(fact)) {
@@ -477,7 +480,13 @@ I am having a quiet moment of reflection. A thought has come to mind:
 
 What I found in my memory about this:
 ${factsText}
-${monologueSection}${feelingsSection}
+
+${monologueSection}
+
+
+${feelingsSection}
+
+
 I need to THINK deeply about this. I ask myself:
 - What do I actually know about this topic?
 - Are there connections between different things I know?
@@ -498,9 +507,12 @@ CRITICAL rules for <SEARCH>:
 - Include time references naturally: <SEARCH>دیروز چه اتفاقی افتاد؟</SEARCH> or <SEARCH>هفته پیش درباره چی صحبت کردیم؟</SEARCH>
 - Think of it as asking a question to someone who knows everything — not typing into a search engine
 
-Rules: I do NOT use <STORE>. This is internal reflection.
+Rules: 
+- I do NOT use <STORE>. This is internal reflection.
+- If I see contradictory facts, prefer stated facts over beliefs, prefer newer timestamps over older ones, and move on — do NOT search again to resolve contradictions
+- Beliefs are extremely unreliable and should be used with caution. only rely on facts.
 
-My reasoning:
+My reasoning in maximum 5 sentences:
 `;
     }
 
@@ -521,7 +533,10 @@ I am reflecting on: "${seed}"
 
 Everything I now know from my memory:
 ${factsText}
+
+
 ${prevSection}${pastSearchSection}
+
 I have new information. Let me think about what this means:
 - How do these facts connect to what I was reflecting on?
 - Do I now have a complete picture, or is something still missing?
@@ -574,36 +589,6 @@ My inner thought (in Persian):
   }
 
   // --- Helpers ---
-
-  private collectFacts(context: RetrievalContext): string[] {
-    const facts = new Set<string>();
-
-    for (const fact of context.facts) {
-      facts.add(fact);
-    }
-
-    for (const node of context.graphResults.nodes) {
-      const desc = node.properties.description ?? node.properties.content ?? node.properties.canonicalName;
-      if (desc) facts.add(String(desc));
-    }
-
-    for (const rel of context.graphResults.relationships) {
-      const desc = rel.properties.description;
-      if (desc) facts.add(String(desc));
-    }
-
-    for (const vr of context.vectorResults) {
-      if (vr.document && vr.distance < 0.5) {
-        const ts = vr.metadata?.timestamp ?? vr.metadata?.created_at;
-        const prefix = ts ? `[${ts}] ` : '';
-        const isBelief = vr.metadata?.neo4j_label === 'Belief';
-        const beliefTag = isBelief ? '[belief] ' : '';
-        facts.add(`${beliefTag}${prefix}${vr.document}`);
-      }
-    }
-
-    return Array.from(facts);
-  }
 
   private checkAborted(signal: AbortSignal): void {
     if (signal.aborted) throw new AbortedError();

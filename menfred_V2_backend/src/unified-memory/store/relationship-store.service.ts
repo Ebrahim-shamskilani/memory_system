@@ -51,9 +51,9 @@ export class RelationshipStoreService {
       return { neo4jSuccess: false, chromaSuccess: false, chromaId };
     }
 
-    // Write ChromaDB
+    // Write ChromaDB (with retry)
     try {
-      await this.chromaDb.upsertDocument(
+      await this.upsertWithRetry(
         COLLECTION_RELATIONSHIPS,
         chromaId,
         dto.description,
@@ -67,10 +67,45 @@ export class RelationshipStoreService {
       );
       return { neo4jSuccess: true, chromaSuccess: true, chromaId };
     } catch (error) {
-      this.logger.error(`ChromaDB relationship write failed, rolling back: ${(error as Error).message}`);
-      await this.rollbackNeo4jRelationship(chromaId);
-      return { neo4jSuccess: true, chromaSuccess: false, chromaId, rolledBack: true };
+      this.logger.error(`ChromaDB relationship write failed (keeping Neo4j record ${chromaId}): ${(error as Error).message}`);
+      return { neo4jSuccess: true, chromaSuccess: false, chromaId };
     }
+  }
+
+  async invalidateRelationship(chromaId: string): Promise<void> {
+    // Set invalidatedAt on the Neo4j edge
+    try {
+      await this.graphDb.runQuery(
+        `MATCH ()-[r:RELATES_TO {chromaId: $chromaId}]-()
+         SET r.invalidatedAt = datetime()
+         RETURN r.chromaId AS chromaId`,
+        { chromaId },
+      );
+    } catch (error) {
+      this.logger.error(`Failed to invalidate relationship in Neo4j: ${(error as Error).message}`);
+    }
+
+    // Delete from ChromaDB so vector search won't return it
+    try {
+      await this.chromaDb.deleteDocument(COLLECTION_RELATIONSHIPS, chromaId);
+    } catch (error) {
+      this.logger.error(`Failed to delete relationship from ChromaDB: ${(error as Error).message}`);
+    }
+  }
+
+  async getRelationshipsWithContentForEntity(
+    entityChromaId: string,
+  ): Promise<{ chromaId: string; description: string }[]> {
+    const result = await this.graphDb.runQuery(
+      `MATCH (source:Entity {chromaId: $entityChromaId})-[r:RELATES_TO]-()
+       WHERE r.invalidatedAt IS NULL
+       RETURN r.chromaId AS chromaId, r.description AS description`,
+      { entityChromaId },
+    );
+    return result.records.map((rec: any) => ({
+      chromaId: rec.chromaId,
+      description: rec.description,
+    }));
   }
 
   async findBetweenEntities(
@@ -79,6 +114,7 @@ export class RelationshipStoreService {
   ): Promise<{ chromaId: string; relationType: string }[]> {
     const result = await this.graphDb.runQuery(
       `MATCH (a:Entity {chromaId: $id1})-[r:RELATES_TO]-(b:Entity {chromaId: $id2})
+       WHERE r.invalidatedAt IS NULL
        RETURN r.chromaId AS chromaId, r.relationType AS relationType`,
       { id1: entityId1, id2: entityId2 },
     );
@@ -94,6 +130,7 @@ export class RelationshipStoreService {
     const result = await this.graphDb.runQuery(
       `MATCH (source:Entity)-[r:RELATES_TO]-(target:Entity)
        WHERE source.chromaId = $entityChromaId
+         AND r.invalidatedAt IS NULL
        RETURN r, source.chromaId AS sourceChromaId, target.chromaId AS targetChromaId`,
       { entityChromaId },
     );
@@ -105,14 +142,22 @@ export class RelationshipStoreService {
     }));
   }
 
-  private async rollbackNeo4jRelationship(chromaId: string): Promise<void> {
-    try {
-      await this.graphDb.runQuery(
-        `MATCH ()-[r:RELATES_TO {chromaId: $chromaId}]-() DELETE r`,
-        { chromaId },
-      );
-    } catch (error) {
-      this.logger.error(`Rollback failed for relationship ${chromaId}: ${(error as Error).message}`);
+  private async upsertWithRetry(
+    collection: string,
+    id: string,
+    document: string,
+    metadata: Record<string, string | number | boolean>,
+    retries = 2,
+  ): Promise<void> {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        await this.chromaDb.upsertDocument(collection, id, document, metadata);
+        return;
+      } catch (error) {
+        if (attempt === retries) throw error;
+        this.logger.warn(`ChromaDB upsert retry ${attempt + 1}/${retries} for ${id}`);
+        await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+      }
     }
   }
 }

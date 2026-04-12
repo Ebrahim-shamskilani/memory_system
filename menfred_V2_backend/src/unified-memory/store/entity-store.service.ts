@@ -57,11 +57,11 @@ export class EntityStoreService {
       return { neo4jSuccess: false, chromaSuccess: false, chromaId };
     }
 
-    // Write ChromaDB
+    // Write ChromaDB (with retry)
     try {
       const aliases = dto.aliases ?? [];
       const document = this.buildEntityDocument(dto.canonicalName, aliases, dto.entityType, dto.description);
-      await this.chromaDb.upsertDocument(COLLECTION_ENTITIES, chromaId, document, {
+      await this.upsertWithRetry(COLLECTION_ENTITIES, chromaId, document, {
         neo4j_label: 'Entity',
         entity_type: dto.entityType,
         canonical_name: dto.canonicalName,
@@ -71,9 +71,8 @@ export class EntityStoreService {
       });
       return { neo4jSuccess: true, chromaSuccess: true, chromaId };
     } catch (error) {
-      this.logger.error(`ChromaDB entity write failed, rolling back Neo4j: ${(error as Error).message}`);
-      await this.rollbackNeo4jEntity(chromaId);
-      return { neo4jSuccess: true, chromaSuccess: false, chromaId, rolledBack: true };
+      this.logger.error(`ChromaDB entity write failed (keeping Neo4j record ${chromaId}): ${(error as Error).message}`);
+      return { neo4jSuccess: true, chromaSuccess: false, chromaId };
     }
   }
 
@@ -125,7 +124,26 @@ export class EntityStoreService {
     );
   }
 
-  private buildEntityDocument(
+  private async upsertWithRetry(
+    collection: string,
+    id: string,
+    document: string,
+    metadata: Record<string, string | number | boolean>,
+    retries = 2,
+  ): Promise<void> {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        await this.chromaDb.upsertDocument(collection, id, document, metadata);
+        return;
+      } catch (error) {
+        if (attempt === retries) throw error;
+        this.logger.warn(`ChromaDB upsert retry ${attempt + 1}/${retries} for ${id}`);
+        await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+      }
+    }
+  }
+
+  buildEntityDocument(
     canonicalName: string,
     aliases: string[],
     entityType: string,
@@ -135,14 +153,4 @@ export class EntityStoreService {
     return `${canonicalName}${aliasText} -- ${description}, ${entityType}`;
   }
 
-  private async rollbackNeo4jEntity(chromaId: string): Promise<void> {
-    try {
-      await this.graphDb.runQuery(
-        `MATCH (e:Entity {chromaId: $chromaId}) DETACH DELETE e`,
-        { chromaId },
-      );
-    } catch (error) {
-      this.logger.error(`Rollback failed for entity ${chromaId}: ${(error as Error).message}`);
-    }
-  }
 }

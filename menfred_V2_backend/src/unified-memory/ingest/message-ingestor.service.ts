@@ -278,6 +278,10 @@ Respond ONLY with valid JSON:
             fact.content,
             linkedEntityChromaIds,
           );
+          await this.invalidateConflictingRelationships(
+            fact.content,
+            linkedEntityChromaIds,
+          );
         }
       }
     }
@@ -622,6 +626,45 @@ JSON response:`;
       }
     } catch (e) {
       this.logger.warn(`Belief invalidation failed: ${(e as Error).message}`);
+    }
+  }
+
+  /**
+   * When a user states a fact, invalidate any relationships about the same entities
+   * that are semantically similar (same topic). This prevents stale relationships
+   * (e.g., "sister") from persisting after a correction (e.g., "wife").
+   */
+  private async invalidateConflictingRelationships(
+    factContent: string,
+    entityChromaIds: string[],
+  ): Promise<void> {
+    try {
+      const factEmbedding = await this.embeddingService.embed(factContent);
+      const seenRelIds = new Set<string>();
+
+      for (const entityChromaId of entityChromaIds) {
+        const relationships = await this.relationshipStore.getRelationshipsWithContentForEntity(entityChromaId);
+
+        for (const rel of relationships) {
+          if (seenRelIds.has(rel.chromaId)) continue;
+          seenRelIds.add(rel.chromaId);
+
+          const relEmbedding = await this.embeddingService.embed(rel.description);
+          const similarity = this.embeddingService.cosineSimilarity(
+            factEmbedding,
+            relEmbedding,
+          );
+
+          if (similarity > CORRECTION_SIMILARITY_THRESHOLD) {
+            this.logger.warn(
+              `Stated fact invalidated relationship (similarity=${similarity.toFixed(3)}): "${rel.description}"`,
+            );
+            await this.relationshipStore.invalidateRelationship(rel.chromaId);
+          }
+        }
+      }
+    } catch (e) {
+      this.logger.warn(`Relationship invalidation failed: ${(e as Error).message}`);
     }
   }
 

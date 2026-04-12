@@ -45,9 +45,24 @@ export interface GraphRelationship {
   targetChromaId: string;
 }
 
+export interface ScoredItem {
+  id: string;
+  similarity: number;
+}
+
 export interface TraversalResult {
   nodes: GraphNode[];
   relationships: GraphRelationship[];
+  scoredItems?: ScoredItem[];
+}
+
+export interface EntropyEvaluation {
+  shouldStop: boolean;
+  entropy: number;
+  maxSimilarity: number;
+  deltaEntropy: number;
+  totalNodes: number;
+  reason: 'confident' | 'diminishing_returns' | 'hard_cap' | 'no_results' | 'continue';
 }
 
 export interface SufficiencyResult {

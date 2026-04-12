@@ -2,18 +2,23 @@ import { Injectable, Logger } from '@nestjs/common';
 import { GraphDbService } from '../../graph-db/graph-db.service';
 import { ConversationService } from '../../conversation/conversation.service';
 import { EntityResolverService } from './entity-resolver.service';
+import { QueryDecomposerService } from './query-decomposer.service';
 import { VectorLookupService } from './vector-lookup.service';
 import { GraphTraversalService } from './graph-traversal.service';
-import { SufficiencyEvaluatorService } from './sufficiency-evaluator.service';
+import { EntropyEvaluatorService } from './entropy-evaluator.service';
+import { FactCollectorService } from './fact-collector.service';
 import {
   EntityResolutionResult,
+  IntentType,
   RetrievalContext,
+  ScoredItem,
   TimeConstraints,
   VectorSearchResult,
   TraversalResult,
 } from '../types/retrieval.types';
 
 const MAX_ITERATIONS = 3;
+const SEED_DISTANCE_THRESHOLD = 0.5;
 
 @Injectable()
 export class RetrievalAgentService {
@@ -23,9 +28,11 @@ export class RetrievalAgentService {
     private readonly graphDb: GraphDbService,
     private readonly conversationService: ConversationService,
     private readonly entityResolver: EntityResolverService,
+    private readonly queryDecomposer: QueryDecomposerService,
     private readonly vectorLookup: VectorLookupService,
     private readonly graphTraversal: GraphTraversalService,
-    private readonly sufficiencyEvaluator: SufficiencyEvaluatorService,
+    private readonly entropyEvaluator: EntropyEvaluatorService,
+    private readonly factCollector: FactCollectorService,
   ) {}
 
   /**
@@ -40,8 +47,13 @@ export class RetrievalAgentService {
     // Step 1: Get conversation context
     const conversationContext = this.conversationService.getContextString();
 
-    // Step 2: Entity resolution + intent classification (skip if pre-computed)
-    const resolution = precomputedResolution ?? await this.entityResolver.resolve(message, conversationContext);
+    // Step 2: Entity resolution + query decomposition (in parallel)
+    const [resolution, subQueries] = await Promise.all([
+      precomputedResolution
+        ? Promise.resolve(precomputedResolution)
+        : this.entityResolver.resolve(message, conversationContext),
+      this.queryDecomposer.decompose(message, conversationContext),
+    ]);
     let timeConstraints: TimeConstraints | undefined = resolution.timeConstraints;
     this.logger.log(
       `Resolved entities: ${resolution.entities.map((e) => e.name).join(', ')} | Intents: ${resolution.intents.join(', ')}` +
@@ -76,21 +88,77 @@ export class RetrievalAgentService {
       this.logger.log(`Injected ${injected}/${turns.length} conversation turns as facts for recall_conversation`);
     }
 
-    // Iterative retrieval loop
+    // Ensure we always search at least entity/relationship collections.
+    // If the only intent is 'store_information', getCollectionsForIntents() returns
+    // nothing — the user's message still references entities we should look up.
+    let searchIntents = resolution.intents;
+    const hasSearchableIntent = searchIntents.some(
+      (i) => i !== 'store_information',
+    );
+    if (!hasSearchableIntent) {
+      searchIntents = [...searchIntents, 'find_entity'];
+    }
+
+    // Iterative retrieval loop with entropy-based stopping
     let currentQuery = resolution.resolvedQuery;
+    let previousEntropy = 0;
+    const allScoredItems: ScoredItem[] = [];
+    const seenVectorIds = new Set<string>();
 
     for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
       context.iterations = iteration + 1;
 
       // Step 3: Vector-first lookup
-      const rawVectorResults = await this.vectorLookup.search(
-        currentQuery,
-        resolution.intents,
-        undefined,
-        timeConstraints,
+      // On first iteration, search original query + all decomposed sub-queries in parallel.
+      // Subsequent iterations only use the original query.
+      const queriesToSearch = iteration === 0
+        ? [currentQuery, ...subQueries]
+        : [currentQuery];
+
+      const allRawResultArrays = await Promise.all(
+        queriesToSearch.map((q) =>
+          this.vectorLookup.search(q, searchIntents, undefined, timeConstraints),
+        ),
       );
+
+      // Merge and deduplicate raw results across all queries
+      const rawVectorResults: VectorSearchResult[] = [];
+      const rawSeenIds = new Set<string>();
+      for (const results of allRawResultArrays) {
+        for (const r of results) {
+          if (!rawSeenIds.has(r.chromaId)) {
+            rawSeenIds.add(r.chromaId);
+            rawVectorResults.push(r);
+          } else {
+            // Keep the one with lower distance (higher similarity)
+            const idx = rawVectorResults.findIndex((x) => x.chromaId === r.chromaId);
+            if (idx >= 0 && r.distance < rawVectorResults[idx].distance) {
+              rawVectorResults[idx] = r;
+            }
+          }
+        }
+      }
+
+      if (iteration === 0 && subQueries.length > 0) {
+        this.logger.log(
+          `Decomposed search: ${queriesToSearch.length} queries → ${rawVectorResults.length} unique results`,
+        );
+      }
+
       const vectorResults = await this.filterSuperseded(rawVectorResults);
-      context.vectorResults.push(...vectorResults);
+
+      // Deduplicate vector results across iterations
+      for (const vr of vectorResults) {
+        if (!seenVectorIds.has(vr.chromaId)) {
+          seenVectorIds.add(vr.chromaId);
+          context.vectorResults.push(vr);
+        }
+      }
+
+      // Build scored items from vector results
+      for (const vr of vectorResults) {
+        allScoredItems.push({ id: vr.chromaId, similarity: 1 - vr.distance });
+      }
 
       // Step 4: Semantic graph traversal
       const seedIds = this.extractSeedIds(vectorResults);
@@ -103,6 +171,13 @@ export class RetrievalAgentService {
         );
         this.mergeTraversalResults(context.graphResults, traversalResult);
 
+        // Merge scored items from graph traversal
+        if (traversalResult.scoredItems) {
+          for (const si of traversalResult.scoredItems) {
+            allScoredItems.push(si);
+          }
+        }
+
         // Collect rich facts from seed entities
         for (const seedId of seedIds) {
           const richFacts = await this.graphTraversal.getEntityFactsRich(seedId, timeConstraints);
@@ -112,9 +187,10 @@ export class RetrievalAgentService {
             context.facts.push(`${prefix}${meta} ${rf.content}`);
           }
 
-          // Collect beliefs linked to this entity
+          // Collect beliefs linked to this entity (skip low-confidence monologue beliefs)
           const richBeliefs = await this.graphTraversal.getEntityBeliefsRich(seedId, timeConstraints);
           for (const rb of richBeliefs) {
+            if (rb.source === 'monologue' && rb.confidence < 0.7) continue;
             const beliefPrefix = rb.isSuperseded ? '[former belief] ' : '[belief] ';
             const meta = `[${rb.createdAt}] [confidence: ${rb.confidence}] [source: ${rb.source}]`;
             context.facts.push(`${beliefPrefix}${meta} ${rb.content}`);
@@ -122,38 +198,39 @@ export class RetrievalAgentService {
         }
       }
 
-      // Collect all retrieved information as fact strings
-      const allFacts = this.collectFacts(context);
+      // Deduplicate scored items (keep highest similarity per id)
+      const mergedScored = this.mergeScored(allScoredItems);
 
-      // Step 5: Sufficiency check
-      const sufficiency = await this.sufficiencyEvaluator.evaluate(
-        message,
-        allFacts,
+      // Step 5: Entropy-based stopping check (replaces LLM sufficiency evaluator)
+      const entropyEval = this.entropyEvaluator.evaluate(
+        mergedScored,
+        previousEntropy,
+        iteration,
       );
+      previousEntropy = entropyEval.entropy;
 
+      const allFacts = this.factCollector.collectFacts(context);
       this.logger.log(
-        `Iteration ${iteration + 1}: ${allFacts.length} facts, sufficient: ${sufficiency.hasEnough} (confidence: ${sufficiency.confidence})`,
+        `Iteration ${iteration + 1}: ${allFacts.length} facts, ` +
+        `entropy: H=${entropyEval.entropy.toFixed(3)}, maxSim=${entropyEval.maxSimilarity.toFixed(3)}, ` +
+        `reason=${entropyEval.reason}`,
       );
 
-      if (sufficiency.hasEnough) {
+      if (entropyEval.shouldStop) {
         break;
       }
 
       // Fallback: drop time constraints and retry with the original query
       // when the first time-filtered iteration returned insufficient results
-      if (timeConstraints && iteration === 0) {
+      if (timeConstraints && iteration === 0 && entropyEval.reason === 'no_results') {
         this.logger.log('Time-filtered search insufficient, retrying without time constraints');
         timeConstraints = undefined;
-        currentQuery = sufficiency.nextSearch ?? resolution.resolvedQuery;
+        currentQuery = resolution.resolvedQuery;
         continue;
       }
 
-      if (!sufficiency.nextSearch) {
-        break;
-      }
-
-      // Use the suggested next search for the next iteration
-      currentQuery = sufficiency.nextSearch;
+      // No nextSearch from entropy evaluator — just re-run with original query
+      currentQuery = resolution.resolvedQuery;
     }
 
     return context;
@@ -201,6 +278,9 @@ export class RetrievalAgentService {
     const seeds: string[] = [];
 
     for (const result of vectorResults) {
+      // Skip results that are too distant — they shouldn't seed graph expansion
+      if (result.distance >= SEED_DISTANCE_THRESHOLD) continue;
+
       if (!seen.has(result.chromaId)) {
         seen.add(result.chromaId);
         seeds.push(result.chromaId);
@@ -243,38 +323,83 @@ export class RetrievalAgentService {
     }
   }
 
-  private collectFacts(context: RetrievalContext): string[] {
-    const facts = new Set<string>();
+  /**
+   * Lightweight retrieval: single-pass vector search + graph traversal + fact collection.
+   * No entity resolution, no iterative loop. Used for <SEARCH> follow-ups.
+   * Always searches ALL collections — the original message's intents may not match
+   * what the <SEARCH> query needs (e.g., original was store_information but follow-up
+   * is a find_entity question).
+   */
+  async retrieveLight(
+    searchQuery: string,
+    _intents: IntentType[],
+    timeConstraints?: TimeConstraints,
+  ): Promise<RetrievalContext> {
+    // Always search broadly — <SEARCH> queries are questions/lookups regardless
+    // of the original message's intent classification
+    const broadIntents: IntentType[] = ['find_entity', 'find_relationship', 'find_event'];
 
-    // Facts from graph traversal
-    for (const fact of context.facts) {
-      facts.add(fact);
-    }
+    const context: RetrievalContext = {
+      query: searchQuery,
+      resolvedEntities: [],
+      intents: broadIntents,
+      timeConstraints,
+      vectorResults: [],
+      graphResults: { nodes: [], relationships: [] },
+      facts: [],
+      iterations: 1,
+    };
 
-    // Node descriptions
-    for (const node of context.graphResults.nodes) {
-      const desc = node.properties.description ?? node.properties.content ?? node.properties.canonicalName;
-      if (desc) facts.add(String(desc));
-    }
+    // Vector lookup — search all collections
+    const rawVectorResults = await this.vectorLookup.search(
+      searchQuery,
+      broadIntents,
+      undefined,
+      timeConstraints,
+    );
+    const vectorResults = await this.filterSuperseded(rawVectorResults);
+    context.vectorResults.push(...vectorResults);
 
-    // Relationship descriptions
-    for (const rel of context.graphResults.relationships) {
-      const desc = rel.properties.description;
-      if (desc) facts.add(String(desc));
-    }
+    // Graph traversal
+    const seedIds = this.extractSeedIds(vectorResults);
+    if (seedIds.length > 0) {
+      const traversalResult = await this.graphTraversal.traverse(
+        seedIds,
+        searchQuery,
+        undefined,
+        timeConstraints,
+      );
+      this.mergeTraversalResults(context.graphResults, traversalResult);
 
-    // Vector document text — annotate with timestamp so the LLM
-    // can distinguish "yesterday's" facts from "today's"
-    for (const vr of context.vectorResults) {
-      if (vr.document && vr.distance < 0.5) {
-        const ts = vr.metadata?.timestamp ?? vr.metadata?.created_at;
-        const prefix = ts ? `[${ts}] ` : '';
-        const isBelief = vr.metadata?.neo4j_label === 'Belief';
-        const beliefTag = isBelief ? '[belief] ' : '';
-        facts.add(`${beliefTag}${prefix}${vr.document}`);
+      for (const seedId of seedIds) {
+        const richFacts = await this.graphTraversal.getEntityFactsRich(seedId, timeConstraints);
+        for (const rf of richFacts) {
+          const prefix = rf.isSuperseded ? '[SUPERSEDED] ' : '';
+          const meta = `[${rf.createdAt}] [confidence: ${rf.confidence}] [source: ${rf.source}]`;
+          context.facts.push(`${prefix}${meta} ${rf.content}`);
+        }
+
+        const richBeliefs = await this.graphTraversal.getEntityBeliefsRich(seedId, timeConstraints);
+        for (const rb of richBeliefs) {
+          if (rb.source === 'monologue' && rb.confidence < 0.7) continue;
+          const beliefPrefix = rb.isSuperseded ? '[former belief] ' : '[belief] ';
+          const meta = `[${rb.createdAt}] [confidence: ${rb.confidence}] [source: ${rb.source}]`;
+          context.facts.push(`${beliefPrefix}${meta} ${rb.content}`);
+        }
       }
     }
 
-    return Array.from(facts);
+    return context;
+  }
+
+  private mergeScored(items: ScoredItem[]): ScoredItem[] {
+    const best = new Map<string, number>();
+    for (const item of items) {
+      const existing = best.get(item.id);
+      if (existing === undefined || item.similarity > existing) {
+        best.set(item.id, item.similarity);
+      }
+    }
+    return Array.from(best.entries()).map(([id, similarity]) => ({ id, similarity }));
   }
 }

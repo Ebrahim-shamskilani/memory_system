@@ -49,9 +49,9 @@ export class BeliefStoreService {
       return { neo4jSuccess: false, chromaSuccess: false, chromaId };
     }
 
-    // Write ChromaDB
+    // Write ChromaDB (with retry)
     try {
-      await this.chromaDb.upsertDocument(COLLECTION_BELIEFS, chromaId, dto.content, {
+      await this.upsertWithRetry(COLLECTION_BELIEFS, chromaId, dto.content, {
         neo4j_label: 'Belief',
         source: dto.source,
         confidence: dto.confidence ?? 0.5,
@@ -60,9 +60,8 @@ export class BeliefStoreService {
       });
       return { neo4jSuccess: true, chromaSuccess: true, chromaId };
     } catch (error) {
-      this.logger.error(`ChromaDB belief write failed, rolling back: ${(error as Error).message}`);
-      await this.rollbackNeo4jNode(chromaId);
-      return { neo4jSuccess: true, chromaSuccess: false, chromaId, rolledBack: true };
+      this.logger.error(`ChromaDB belief write failed (keeping Neo4j record ${chromaId}): ${(error as Error).message}`);
+      return { neo4jSuccess: true, chromaSuccess: false, chromaId };
     }
   }
 
@@ -126,14 +125,22 @@ export class BeliefStoreService {
     return record.b.properties;
   }
 
-  private async rollbackNeo4jNode(chromaId: string): Promise<void> {
-    try {
-      await this.graphDb.runQuery(
-        `MATCH (n:Belief {chromaId: $chromaId}) DETACH DELETE n`,
-        { chromaId },
-      );
-    } catch (error) {
-      this.logger.error(`Rollback failed for Belief ${chromaId}: ${(error as Error).message}`);
+  private async upsertWithRetry(
+    collection: string,
+    id: string,
+    document: string,
+    metadata: Record<string, string | number | boolean>,
+    retries = 2,
+  ): Promise<void> {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        await this.chromaDb.upsertDocument(collection, id, document, metadata);
+        return;
+      } catch (error) {
+        if (attempt === retries) throw error;
+        this.logger.warn(`ChromaDB upsert retry ${attempt + 1}/${retries} for ${id}`);
+        await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+      }
     }
   }
 }

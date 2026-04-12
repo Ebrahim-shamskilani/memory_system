@@ -51,7 +51,7 @@ export class VectorLookupService {
             results.push({
               chromaId: ids[i],
               document: documents[i] ?? '',
-              distance: 0, // metadata-only fetch, no distance score
+              distance: 0.3, // metadata-only fetch — use moderate distance to avoid skewing entropy
               metadata: (metadatas[i] as Record<string, unknown>) ?? {},
             });
           }

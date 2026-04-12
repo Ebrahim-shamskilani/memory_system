@@ -18,6 +18,12 @@ export interface MenfredMemoryConfig {
     dataPath?: string;        // default: './chroma_data'
     managed?: boolean;        // default: true (standalone), false for SDK
   };
+  openrouter?: {
+    apiKey: string;
+    model: string;
+    url?: string;             // default: 'https://openrouter.ai/api/v1'
+  };
+  llmProvider?: 'ollama' | 'openrouter';  // default: 'ollama'
   conversation?: {
     maxBufferSize?: number;   // default: 10
   };

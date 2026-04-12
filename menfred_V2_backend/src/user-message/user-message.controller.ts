@@ -2,6 +2,8 @@ import { Body, Controller, Logger, Post, Res } from '@nestjs/common';
 import { Response } from 'express';
 import { UnifiedMemoryService } from '../unified-memory/unified-memory.service';
 import { ConversationService } from '../conversation/conversation.service';
+import { RetrievalAgentService } from '../unified-memory/retrieve/retrieval-agent.service';
+import { FactCollectorService } from '../unified-memory/retrieve/fact-collector.service';
 
 @Controller('userMessage')
 export class UserMessageController {
@@ -10,6 +12,8 @@ export class UserMessageController {
   constructor(
     private readonly unifiedMemory: UnifiedMemoryService,
     private readonly conversation: ConversationService,
+    private readonly retrievalAgent: RetrievalAgentService,
+    private readonly factCollector: FactCollectorService,
   ) {}
 
   @Post('stream')
@@ -104,6 +108,44 @@ export class UserMessageController {
       this.logger.error(`Erase memory failed: ${(error as Error).message}`);
       return {
         success: false,
+        error: (error as Error).message,
+        timestamp: new Date().toISOString(),
+      };
+    }
+  }
+
+  @Post('recall')
+  async recall(@Body() body: { query?: string }) {
+    const query = body?.query ?? '';
+    this.logger.log(`Memory recall: ${query}`);
+
+    try {
+      const context = await this.retrievalAgent.retrieve(query);
+      const facts = this.factCollector.collectFacts(context);
+
+      return {
+        success: true,
+        query: context.query,
+        resolvedEntities: context.resolvedEntities,
+        intents: context.intents,
+        timeConstraints: context.timeConstraints,
+        iterations: context.iterations,
+        facts,
+        vectorResults: context.vectorResults.map(vr => ({
+          chromaId: vr.chromaId,
+          document: vr.document,
+          distance: vr.distance,
+          metadata: vr.metadata,
+        })),
+        graphNodes: context.graphResults.nodes.length,
+        graphRelationships: context.graphResults.relationships.length,
+        timestamp: new Date().toISOString(),
+      };
+    } catch (error) {
+      this.logger.error(`Recall failed: ${(error as Error).message}`);
+      return {
+        success: false,
+        query,
         error: (error as Error).message,
         timestamp: new Date().toISOString(),
       };

@@ -10,15 +10,17 @@ import { RetrievalAgentService } from './retrieve/retrieval-agent.service';
 import { EntityResolverService } from './retrieve/entity-resolver.service';
 import { VectorLookupService } from './retrieve/vector-lookup.service';
 import { GraphTraversalService } from './retrieve/graph-traversal.service';
-import { SufficiencyEvaluatorService } from './retrieve/sufficiency-evaluator.service';
+import { EntropyEvaluatorService } from './retrieve/entropy-evaluator.service';
+import { FactCollectorService } from './retrieve/fact-collector.service';
+import { QueryDecomposerService } from './retrieve/query-decomposer.service';
 import { EmbeddingService } from './retrieve/embedding.service';
-import { SynthesisService } from './synthesize/synthesis.service';
 import { MessageIngestorService } from './ingest/message-ingestor.service';
 import { BeliefIngestorService } from './ingest/belief-ingestor.service';
 import { ConsolidationService } from './consolidate/consolidation.service';
 import { CognitionService } from './cognition/cognition.service';
 import { MonologueBufferService } from './cognition/monologue-buffer.service';
 import { MonologueService } from './cognition/monologue.service';
+import { StoreIntegrityService } from './store/store-integrity.service';
 import { UnconsciousService } from './unconscious/unconscious.service';
 
 @Module({
@@ -30,12 +32,15 @@ import { UnconsciousService } from './unconscious/unconscious.service';
     EpisodeStoreService,
     BeliefStoreService,
     UnifiedStoreService,
+    StoreIntegrityService,
     // Retrieval layer
     EmbeddingService,
     EntityResolverService,
     VectorLookupService,
     GraphTraversalService,
-    SufficiencyEvaluatorService,
+    EntropyEvaluatorService,
+    FactCollectorService,
+    QueryDecomposerService,
     RetrievalAgentService,
     // Unconscious layer
     UnconsciousService,
@@ -44,8 +49,6 @@ import { UnconsciousService } from './unconscious/unconscious.service';
     BeliefIngestorService,
     // Consolidation layer
     ConsolidationService,
-    // Synthesis layer
-    SynthesisService,
     // Cognition layer
     CognitionService,
     MonologueBufferService,
@@ -53,6 +56,6 @@ import { UnconsciousService } from './unconscious/unconscious.service';
     // Top-level orchestrator
     UnifiedMemoryService,
   ],
-  exports: [UnifiedMemoryService, UnifiedStoreService, EmbeddingService, CognitionService, MonologueService, MonologueBufferService],
+  exports: [UnifiedMemoryService, UnifiedStoreService, EmbeddingService, CognitionService, MonologueService, MonologueBufferService, RetrievalAgentService, FactCollectorService],
 })
 export class UnifiedMemoryModule {}

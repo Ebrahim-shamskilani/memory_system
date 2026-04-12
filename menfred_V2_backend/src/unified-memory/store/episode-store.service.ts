@@ -62,9 +62,9 @@ export class EpisodeStoreService {
       return { neo4jSuccess: false, chromaSuccess: false, chromaId };
     }
 
-    // Write ChromaDB
+    // Write ChromaDB (with retry)
     try {
-      await this.chromaDb.upsertDocument(COLLECTION_EPISODES, chromaId, dto.description, {
+      await this.upsertWithRetry(COLLECTION_EPISODES, chromaId, dto.description, {
         neo4j_label: 'Episode',
         level: dto.level,
         timestamp,
@@ -75,9 +75,8 @@ export class EpisodeStoreService {
       });
       return { neo4jSuccess: true, chromaSuccess: true, chromaId };
     } catch (error) {
-      this.logger.error(`ChromaDB episode write failed, rolling back: ${(error as Error).message}`);
-      await this.rollbackNeo4jNode('Episode', chromaId);
-      return { neo4jSuccess: true, chromaSuccess: false, chromaId, rolledBack: true };
+      this.logger.error(`ChromaDB episode write failed (keeping Neo4j record ${chromaId}): ${(error as Error).message}`);
+      return { neo4jSuccess: true, chromaSuccess: false, chromaId };
     }
   }
 
@@ -112,9 +111,9 @@ export class EpisodeStoreService {
       return { neo4jSuccess: false, chromaSuccess: false, chromaId };
     }
 
-    // Write ChromaDB
+    // Write ChromaDB (with retry)
     try {
-      await this.chromaDb.upsertDocument(COLLECTION_EPISODES, chromaId, dto.content, {
+      await this.upsertWithRetry(COLLECTION_EPISODES, chromaId, dto.content, {
         neo4j_label: 'Fact',
         level: 0,
         timestamp: now,
@@ -124,9 +123,8 @@ export class EpisodeStoreService {
       });
       return { neo4jSuccess: true, chromaSuccess: true, chromaId };
     } catch (error) {
-      this.logger.error(`ChromaDB fact write failed, rolling back: ${(error as Error).message}`);
-      await this.rollbackNeo4jNode('Fact', chromaId);
-      return { neo4jSuccess: true, chromaSuccess: false, chromaId, rolledBack: true };
+      this.logger.error(`ChromaDB fact write failed (keeping Neo4j record ${chromaId}): ${(error as Error).message}`);
+      return { neo4jSuccess: true, chromaSuccess: false, chromaId };
     }
   }
 
@@ -314,14 +312,22 @@ export class EpisodeStoreService {
     return result.records as any[];
   }
 
-  private async rollbackNeo4jNode(label: string, chromaId: string): Promise<void> {
-    try {
-      await this.graphDb.runQuery(
-        `MATCH (n:${label} {chromaId: $chromaId}) DETACH DELETE n`,
-        { chromaId },
-      );
-    } catch (error) {
-      this.logger.error(`Rollback failed for ${label} ${chromaId}: ${(error as Error).message}`);
+  private async upsertWithRetry(
+    collection: string,
+    id: string,
+    document: string,
+    metadata: Record<string, string | number | boolean>,
+    retries = 2,
+  ): Promise<void> {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        await this.chromaDb.upsertDocument(collection, id, document, metadata);
+        return;
+      } catch (error) {
+        if (attempt === retries) throw error;
+        this.logger.warn(`ChromaDB upsert retry ${attempt + 1}/${retries} for ${id}`);
+        await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+      }
     }
   }
 }

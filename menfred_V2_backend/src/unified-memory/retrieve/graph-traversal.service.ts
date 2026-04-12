@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { GraphDbService } from '../../graph-db/graph-db.service';
 import { ChromadbService, COLLECTION_RELATIONSHIPS } from '../../chromadb/chromadb.service';
 import { EmbeddingService } from './embedding.service';
-import { TraversalResult, GraphNode, GraphRelationship, TimeConstraints } from '../types/retrieval.types';
+import { TraversalResult, GraphNode, GraphRelationship, TimeConstraints, ScoredItem } from '../types/retrieval.types';
 
 const TOP_K_RELATIONSHIPS = 5;
 const MAX_HOPS = 2;
@@ -32,6 +32,7 @@ export class GraphTraversalService {
     const visitedNodes = new Set<string>();
     const allNodes: GraphNode[] = [];
     const allRelationships: GraphRelationship[] = [];
+    const allScoredItems: ScoredItem[] = [];
     let currentSeeds = [...seedChromaIds];
 
     // Get query embedding once
@@ -63,6 +64,7 @@ export class GraphTraversalService {
         const relResult = await this.graphDb.runQuery(
           `MATCH (source {chromaId: $chromaId})-[r]-(target)
            WHERE r.chromaId IS NOT NULL
+             AND r.invalidatedAt IS NULL
              AND ($after IS NULL OR r.createdAt >= datetime($after))
              AND ($before IS NULL OR r.createdAt <= datetime($before))
            RETURN r.chromaId AS relChromaId, type(r) AS relType,
@@ -82,6 +84,11 @@ export class GraphTraversalService {
         // Fetch relationship embeddings from ChromaDB in batch
         const relChromaIds = relationships.map((r) => r.relChromaId).filter(Boolean);
         const scored = await this.scoreRelationships(relChromaIds, queryEmbedding);
+
+        // Accumulate all scored items for entropy evaluation
+        for (const s of scored) {
+          allScoredItems.push({ id: s.chromaId, similarity: s.similarity });
+        }
 
         // Take top-K most relevant relationships
         const topRelationships = scored
@@ -115,7 +122,7 @@ export class GraphTraversalService {
       currentSeeds = newSeeds;
     }
 
-    return { nodes: allNodes, relationships: allRelationships };
+    return { nodes: allNodes, relationships: allRelationships, scoredItems: allScoredItems };
   }
 
   /**

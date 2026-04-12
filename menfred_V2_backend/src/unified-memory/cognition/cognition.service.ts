@@ -4,6 +4,7 @@ import { ConversationService } from '../../conversation/conversation.service';
 import { RetrievalAgentService } from '../retrieve/retrieval-agent.service';
 import { VectorLookupService } from '../retrieve/vector-lookup.service';
 import { GraphTraversalService } from '../retrieve/graph-traversal.service';
+import { FactCollectorService } from '../retrieve/fact-collector.service';
 import { MessageIngestorService, IngestionResult } from '../ingest/message-ingestor.service';
 import { ConsolidationService } from '../consolidate/consolidation.service';
 import { MonologueBufferService } from './monologue-buffer.service';
@@ -28,6 +29,7 @@ export class CognitionService {
     private readonly retrievalAgent: RetrievalAgentService,
     private readonly vectorLookup: VectorLookupService,
     private readonly graphTraversal: GraphTraversalService,
+    private readonly factCollector: FactCollectorService,
     private readonly ingestor: MessageIngestorService,
     private readonly consolidation: ConsolidationService,
     private readonly monologueBuffer: MonologueBufferService,
@@ -47,7 +49,7 @@ export class CognitionService {
     yield { type: 'thinking_title', title: 'Searching my memories...' };
 
     const retrievalContext = await this.retrievalAgent.retrieve(message);
-    const allFacts = this.collectFacts(retrievalContext);
+    const allFacts = this.factCollector.collectFacts(retrievalContext);
 
     this.logger.log(
       `Retrieval complete: ${allFacts.length} facts, ${retrievalContext.iterations} iterations`,
@@ -67,116 +69,22 @@ export class CognitionService {
       this.logger.warn(`Unconscious snapshot failed: ${(err as Error).message}`);
     }
 
-    // 3. COGNITION LOOP — genuine thinking with follow-up searches
-    let alreadyIngested = false;
+    // 3. COGNITION LOOP — temporarily skipped, going straight to voice
     let ingestionResult: IngestionResult | null = null;
     const previousThoughts: string[] = [];
     let cogIterations = 0;
     const accumulatedFacts = [...allFacts];
-    const seenFacts = new Set(allFacts);
 
-    for (let i = 0; i < MAX_COG_ITERATIONS; i++) {
-      cogIterations++;
-      yield {
-        type: 'thinking_title',
-        title: i === 0 ? 'Thinking...' : 'Thinking deeper...',
-      };
-
-      const conversationContext = this.conversation.getContextString();
-      const cogPrompt = this.buildCognitionPrompt(
-        message,
-        accumulatedFacts,
-        previousThoughts,
-        conversationContext,
-        i,
-        unconsciousSnapshot,
-      ) + '\n\n' + this.buildCognitionPrompt(
-        message,
-        accumulatedFacts,
-        previousThoughts,
-        conversationContext,
-        i,
-        unconsciousSnapshot,
-      ); // reapiting the prompt will increase the response accuracy
-
-      let thought = '';
-      for await (const token of this.llm.generateStream({
-        model: this.llm.getDefaultModel(),
-        prompt: cogPrompt,
-        options: { temperature: 0.4, num_predict: 400 },
-      })) {
-        thought += token;
-        yield { type: 'thinking_token', token };
+    // Always attempt ingestion (since cognition loop isn't deciding <STORE>)
+    try {
+      ingestionResult = await this.ingestor.ingest(message);
+      if (ingestionResult.factsCreated > 0 || ingestionResult.entitiesCreated > 0) {
+        this.logger.log(
+          `Auto-ingestion: ${ingestionResult.factsCreated} facts, ${ingestionResult.entitiesCreated} entities`,
+        );
       }
-
-      // Extract the clean reasoning (strip action tags)
-      let cleanThought = thought
-        .replace(/<READY>/g, '')
-        .replace(/<STORE\s*\/?>([\s\S]*?<\/STORE>)?/g, '')
-        .replace(/<SEARCH>[\s\S]*?<\/SEARCH>/g, '')
-        .trim();
-
-      previousThoughts.push(cleanThought);
-
-      // Parse action tags
-      const hasReady = thought.includes('<READY>');
-      const hasStore = /<STORE/.test(thought);
-      const searchMatches = [...thought.matchAll(/<SEARCH>([\s\S]*?)<\/SEARCH>/g)];
-
-      // Handle <STORE>
-      if (hasStore && !alreadyIngested) {
-        yield { type: 'thinking_title', title: 'Storing new information...' };
-        try {
-          ingestionResult = await this.ingestor.ingest(message);
-          alreadyIngested = true;
-          this.logger.log(
-            `Cognition triggered ingestion: ${ingestionResult.factsCreated} facts, ${ingestionResult.entitiesCreated} entities`,
-          );
-        } catch (err) {
-          this.logger.error(`Ingestion failed: ${(err as Error).message}`);
-        }
-      }
-
-      // Handle <SEARCH> — do follow-up retrieval for each search query
-      if (searchMatches.length > 0) {
-        for (const match of searchMatches) {
-          const searchQuery = match[1].trim();
-          if (!searchQuery) continue;
-
-          yield { type: 'thinking_title', title: `Searching: ${searchQuery}...` };
-
-          try {
-            // Use the full retrieval pipeline for the follow-up search
-            const followUpContext = await this.retrievalAgent.retrieve(searchQuery);
-            const newFacts = this.collectFacts(followUpContext);
-            let added = 0;
-            for (const fact of newFacts) {
-              if (!seenFacts.has(fact)) {
-                seenFacts.add(fact);
-                accumulatedFacts.push(fact);
-                added++;
-              }
-            }
-            previousThoughts.push(`[Searched "${searchQuery}" → ${added} new facts found]`);
-            this.logger.log(`Follow-up search "${searchQuery}": ${added} new facts`);
-
-            // Merge sources
-            this.mergeRetrievalContext(retrievalContext, followUpContext);
-          } catch (err) {
-            this.logger.warn(`Follow-up search failed: ${(err as Error).message}`);
-            previousThoughts.push(`[Searched "${searchQuery}" → search failed]`);
-          }
-        }
-
-        // If we searched, don't break — let the next iteration reason about new facts
-        if (hasReady) break;
-        continue;
-      }
-
-      // Break conditions (when no <SEARCH> was found)
-      if (hasReady || hasStore) break;
-      // No action tag at all — done thinking
-      break;
+    } catch (err) {
+      this.logger.error(`Ingestion failed: ${(err as Error).message}`);
     }
 
     yield { type: 'thinking_done' };
@@ -272,7 +180,11 @@ Recent conversation:
 ${conversationContext}
 
 My PRIMARY focus is on what ${this.userName} just said. I must respond to THEIR message directly.
-${monologueHint}${feelingsSection}
+
+${monologueHint}
+
+${feelingsSection}
+
 FIRST, I must decide: does ${this.userName}'s message actually need my memory?
 - If ${this.userName} is asking a riddle, puzzle, general knowledge question, or just chatting — I should THINK and REASON using my own intelligence, NOT search my memory. Memory facts about ${this.userName}'s life are IRRELEVANT to riddles and general questions.
 - If ${this.userName} is asking about their life, people they know, past events, or something personal — THEN my memory is useful.
@@ -297,7 +209,10 @@ CRITICAL rules for <SEARCH>:
 - Include time references naturally: <SEARCH>دیروز چه اتفاقی افتاد؟</SEARCH> or <SEARCH>هفته پیش درباره چی صحبت کردیم؟</SEARCH>
 - Think of it as asking a question to someone who knows everything — not typing into a search engine
 
-Rules: Questions are never stored. <STORE> means the user told me something new. Use the same language as ${this.userName}.
+Rules:
+- If I see contradictory facts, prefer stated facts over beliefs, prefer newer timestamps over older ones, and move on — do NOT search again to resolve contradictions
+- what i found in memory that has [self] tag are extremely unreliable and should be used with caution. only rely on facts.
+- Questions are never stored. <STORE> means the user told me something new. Use the same language as ${this.userName}.
 
 My reasoning:
 `;
@@ -355,6 +270,9 @@ My reasoning:
 
 ${this.userName} said: "${message}"
 
+What I know from my memory:
+${factsText}
+
 My reasoning about this:
 ${thinkingText}
 
@@ -377,38 +295,6 @@ RULES:
 
 My response to ${this.userName} (in Persian):
 `;
-  }
-
-  private collectFacts(context: RetrievalContext): string[] {
-    const facts = new Set<string>();
-
-    for (const fact of context.facts) {
-      facts.add(fact);
-    }
-
-    for (const node of context.graphResults.nodes) {
-      const desc = node.properties.description ?? node.properties.content ?? node.properties.canonicalName;
-      if (desc) facts.add(String(desc));
-    }
-
-    for (const rel of context.graphResults.relationships) {
-      const desc = rel.properties.description;
-      if (desc) facts.add(String(desc));
-    }
-
-    for (const vr of context.vectorResults) {
-      if (vr.document && vr.distance < 0.5) {
-        // Include timestamp so the LLM can identify temporal context
-        // (e.g., which facts are from "yesterday" vs "today")
-        const ts = vr.metadata?.timestamp ?? vr.metadata?.created_at;
-        const prefix = ts ? `[${ts}] ` : '';
-        const isBelief = vr.metadata?.neo4j_label === 'Belief';
-        const beliefTag = isBelief ? '[belief] ' : '';
-        facts.add(`${beliefTag}${prefix}${vr.document}`);
-      }
-    }
-
-    return Array.from(facts);
   }
 
   private extractSources(context: RetrievalContext) {

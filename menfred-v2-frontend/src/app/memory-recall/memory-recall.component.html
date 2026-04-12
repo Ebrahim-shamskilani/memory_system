@@ -1,0 +1,129 @@
+<div class="recall-container">
+  <div class="recall-header">
+    <h2>Memory Recall</h2>
+  </div>
+
+  <form class="recall-input" (ngSubmit)="recall()">
+    <input
+      type="text"
+      [(ngModel)]="query"
+      name="query"
+      placeholder="Query memory..."
+      [disabled]="loading"
+      autocomplete="off"
+    />
+    <button type="submit" [disabled]="loading || !query.trim()">
+      @if (loading) { Recalling... } @else { Recall }
+    </button>
+  </form>
+
+  <div class="recall-body">
+    @if (!result && !loading) {
+      <div class="empty-state">
+        <p>Send a query to see raw retrieval results from the memory system.</p>
+      </div>
+    }
+
+    @if (loading) {
+      <div class="loading-state">
+        <span class="dot"></span>
+        <span class="dot"></span>
+        <span class="dot"></span>
+      </div>
+    }
+
+    @if (result) {
+      <div class="result-section">
+        <!-- Status -->
+        <div class="result-badge" [class.success]="result.success" [class.error]="!result.success">
+          {{ result.success ? 'OK' : 'FAILED' }}
+        </div>
+
+        @if (result.error) {
+          <div class="error-box">{{ result.error }}</div>
+        }
+
+        <!-- Meta -->
+        <div class="meta-grid">
+          <div class="meta-item">
+            <span class="meta-label">Resolved query</span>
+            <span class="meta-value">{{ result.query }}</span>
+          </div>
+          <div class="meta-item">
+            <span class="meta-label">Intents</span>
+            <span class="meta-value">{{ result.intents.join(', ') || '(none)' }}</span>
+          </div>
+          <div class="meta-item">
+            <span class="meta-label">Iterations</span>
+            <span class="meta-value">{{ result.iterations }}</span>
+          </div>
+          <div class="meta-item">
+            <span class="meta-label">Graph</span>
+            <span class="meta-value">{{ result.graphNodes }} nodes, {{ result.graphRelationships }} rels</span>
+          </div>
+          @if (result.timeConstraints) {
+            <div class="meta-item">
+              <span class="meta-label">Time filter</span>
+              <span class="meta-value">{{ result.timeConstraints.after ?? '*' }} .. {{ result.timeConstraints.before ?? '*' }}</span>
+            </div>
+          }
+        </div>
+
+        <!-- Resolved Entities -->
+        @if (result.resolvedEntities.length > 0) {
+          <div class="section">
+            <div class="section-title">Resolved Entities ({{ result.resolvedEntities.length }})</div>
+            <div class="entity-list">
+              @for (e of result.resolvedEntities; track e.name) {
+                <div class="entity-chip">
+                  <span class="entity-name">{{ e.name }}</span>
+                  <span class="entity-conf">{{ (e.confidence * 100).toFixed(0) }}%</span>
+                </div>
+              }
+            </div>
+          </div>
+        }
+
+        <!-- Facts -->
+        <div class="section">
+          <button class="section-toggle" (click)="expandedFacts = !expandedFacts">
+            {{ expandedFacts ? 'Hide' : 'Show' }} Facts ({{ result.facts.length }})
+          </button>
+          @if (expandedFacts) {
+            <div class="fact-list">
+              @for (fact of result.facts; track $index) {
+                <div class="fact-item">{{ fact }}</div>
+              }
+              @if (result.facts.length === 0) {
+                <div class="no-data">(no facts retrieved)</div>
+              }
+            </div>
+          }
+        </div>
+
+        <!-- Vector Results -->
+        <div class="section">
+          <button class="section-toggle" (click)="expandedVectors = !expandedVectors">
+            {{ expandedVectors ? 'Hide' : 'Show' }} Vector Results ({{ result.vectorResults.length }})
+          </button>
+          @if (expandedVectors) {
+            <div class="vector-list">
+              @for (vr of result.vectorResults; track vr.chromaId) {
+                <div class="vector-item">
+                  <div class="vector-header">
+                    <span class="vector-distance">dist: {{ vr.distance.toFixed(4) }}</span>
+                    <span class="vector-id">{{ vr.chromaId.substring(0, 8) }}...</span>
+                  </div>
+                  <div class="vector-doc">{{ vr.document }}</div>
+                </div>
+              }
+              @if (result.vectorResults.length === 0) {
+                <div class="no-data">(no vector results)</div>
+              }
+            </div>
+          }
+        </div>
+      </div>
+    }
+  </div>
+</div>

@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npx nest build:*)"
+      "Bash(npx nest build:*)",
+      "Bash(curl:*)",
+      "Bash(python3:*)"
     ]
   }
 }
