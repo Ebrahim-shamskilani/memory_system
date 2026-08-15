@@ -100,20 +100,27 @@ export class RetrievalAgentService {
     }
 
     // Iterative retrieval loop with entropy-based stopping
-    let currentQuery = resolution.resolvedQuery;
+    const queryBatches = this.planQueryBatches(resolution.resolvedQuery, subQueries);
     let previousEntropy = 0;
     const allScoredItems: ScoredItem[] = [];
     const seenVectorIds = new Set<string>();
+    // Set when the time-constraint fallback wants a specific retry
+    let retryQueries: string[] | null = null;
 
     for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
-      context.iterations = iteration + 1;
-
       // Step 3: Vector-first lookup
-      // On first iteration, search original query + all decomposed sub-queries in parallel.
-      // Subsequent iterations only use the original query.
-      const queriesToSearch = iteration === 0
-        ? [currentQuery, ...subQueries]
-        : [currentQuery];
+      // Each iteration gets its own batch of decomposed sub-queries. Re-running
+      // an already-searched query against a deterministic index returns the
+      // same hits, so an iteration with no fresh queries cannot learn anything.
+      const queriesToSearch = retryQueries ?? queryBatches[iteration] ?? [];
+      retryQueries = null;
+
+      if (queriesToSearch.length === 0) {
+        this.logger.log(`Iteration ${iteration + 1}: no unsearched queries remain, stopping`);
+        break;
+      }
+
+      context.iterations = iteration + 1;
 
       const allRawResultArrays = await Promise.all(
         queriesToSearch.map((q) =>
@@ -165,7 +172,7 @@ export class RetrievalAgentService {
       if (seedIds.length > 0) {
         const traversalResult = await this.graphTraversal.traverse(
           seedIds,
-          currentQuery,
+          resolution.resolvedQuery,
           undefined,
           timeConstraints,
         );
@@ -221,19 +228,36 @@ export class RetrievalAgentService {
       }
 
       // Fallback: drop time constraints and retry with the original query
-      // when the first time-filtered iteration returned insufficient results
+      // when the first time-filtered iteration returned insufficient results.
+      // Same query, different filter, so it can return something new.
       if (timeConstraints && iteration === 0 && entropyEval.reason === 'no_results') {
         this.logger.log('Time-filtered search insufficient, retrying without time constraints');
         timeConstraints = undefined;
-        currentQuery = resolution.resolvedQuery;
-        continue;
+        retryQueries = [resolution.resolvedQuery, ...(queryBatches[iteration + 1] ?? [])];
       }
-
-      // No nextSearch from entropy evaluator — just re-run with original query
-      currentQuery = resolution.resolvedQuery;
     }
 
     return context;
+  }
+
+  /**
+   * Spread the decomposed sub-queries over the available iterations, with the
+   * resolved query leading the first batch. Later iterations are only worth
+   * running if they can issue a query the earlier ones did not.
+   */
+  private planQueryBatches(mainQuery: string, subQueries: string[]): string[][] {
+    const batches: string[][] = Array.from({ length: MAX_ITERATIONS }, () => []);
+    batches[0].push(mainQuery);
+
+    if (subQueries.length === 0) return batches;
+
+    const perBatch = Math.ceil(subQueries.length / MAX_ITERATIONS);
+    subQueries.forEach((q, i) => {
+      const target = Math.min(Math.floor(i / perBatch), MAX_ITERATIONS - 1);
+      batches[target].push(q);
+    });
+
+    return batches;
   }
 
   /**

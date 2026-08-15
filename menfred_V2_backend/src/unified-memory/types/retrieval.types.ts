@@ -58,7 +58,7 @@ export interface TraversalResult {
 
 export interface EntropyEvaluation {
   shouldStop: boolean;
-  entropy: number;
+  entropy: number;          // normalized to [0, 1]: 0 = one clear winner, 1 = indistinguishable
   maxSimilarity: number;
   deltaEntropy: number;
   totalNodes: number;

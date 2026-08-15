@@ -3,10 +3,12 @@ import { ScoredItem, EntropyEvaluation } from '../types/retrieval.types';
 
 const BETA = 3.0;
 const MAX_ITERATIONS = 3;
-const MAX_NODES = 50;
+const MAX_NODES = 200;
+const TOP_K = 10;
 const HIGH_SIM_THRESHOLD = 0.65;
-const ENTROPY_THRESHOLD = 1.5;
+const ENTROPY_THRESHOLD = 0.5;
 const DELTA_ENTROPY_THRESHOLD = 0.05;
+const STD_EPSILON = 1e-9;
 
 @Injectable()
 export class EntropyEvaluatorService {
@@ -30,7 +32,7 @@ export class EntropyEvaluatorService {
 
     const similarities = allScored.map((s) => s.similarity);
     const maxSimilarity = Math.max(...similarities);
-    const entropy = this.shannonEntropy(similarities);
+    const entropy = this.normalizedEntropy(similarities);
     const deltaEntropy = Math.abs(entropy - previousEntropy);
     const totalNodes = allScored.length;
 
@@ -57,12 +59,37 @@ export class EntropyEvaluatorService {
     return { shouldStop: false, entropy, maxSimilarity, deltaEntropy, totalNodes, reason: 'continue' };
   }
 
-  private shannonEntropy(similarities: number[]): number {
-    // Build softmax probability distribution
-    const expValues = similarities.map((s) => Math.exp(BETA * s));
+  /**
+   * Concentration of the top-K candidates, in [0, 1]. 0 means one candidate
+   * clearly dominates; 1 means they are indistinguishable.
+   *
+   * Two normalisations make the value comparable across iterations:
+   *
+   * - Only the top K are scored, so the ln(K) ceiling on Shannon entropy is a
+   *   constant instead of growing with the size of the accumulated pool. The
+   *   raw entropy of the full pool tracked candidate *count*, not agreement.
+   * - Similarities are standardised before the softmax. Raw similarities sit in
+   *   a narrow band (~0.4–0.8), so BETA * s spans about one logit and the
+   *   softmax comes out near-uniform however strong the top hit is.
+   */
+  private normalizedEntropy(similarities: number[]): number {
+    const topK = [...similarities].sort((a, b) => b - a).slice(0, TOP_K);
+    const k = topK.length;
+
+    // A single candidate is maximally concentrated by definition.
+    if (k <= 1) return 0;
+
+    const mean = topK.reduce((a, b) => a + b, 0) / k;
+    const variance = topK.reduce((acc, s) => acc + (s - mean) ** 2, 0) / k;
+    const std = Math.sqrt(variance);
+
+    // Every candidate scored identically — nothing to choose between them.
+    if (std < STD_EPSILON) return 1;
+
+    const expValues = topK.map((s) => Math.exp((BETA * (s - mean)) / std));
     const sumExp = expValues.reduce((a, b) => a + b, 0);
 
-    if (sumExp === 0) return 0;
+    if (!Number.isFinite(sumExp) || sumExp === 0) return 0;
 
     const probabilities = expValues.map((e) => e / sumExp);
 
@@ -74,6 +101,6 @@ export class EntropyEvaluatorService {
       }
     }
 
-    return h;
+    return h / Math.log(k);
   }
 }
